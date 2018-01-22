@@ -50,7 +50,6 @@ def main(*kargs, **kwargs):
     swear_words_fname = kwargs['swear_words']
     wrong_words_fname = kwargs['wrong_words']
     warm_start = kwargs['warm_start']
-    model_warm_start = [model.lower() for model in kwargs['model_warm_start']]
     format_embeds = kwargs['format_embeds']
     config = kwargs['config']
     train_clear = kwargs['train_clear']
