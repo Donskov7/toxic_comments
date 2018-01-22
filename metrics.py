@@ -1,5 +1,4 @@
 import numpy as np
-from matplotlib import pyplot as plt
 from sklearn.metrics import log_loss, roc_auc_score, f1_score, precision_score, recall_score
 
 
@@ -26,20 +25,11 @@ def calc_metrics(y_true, y_hat, max_steps=1000):
     return metrics
 
 
-def get_metrics(y_true, y_pred, target_labels, hist=None, plot=False):
+def get_metrics(y_true, y_pred, target_labels, hist=None):
     metrics = {}
     for i, label in enumerate(target_labels):
         metrics[label] = calc_metrics(np.array(y_true)[:, i], y_pred[:, i])
     metrics['Avg'] = {'Logloss': np.mean([metric['Logloss'] for label, metric in metrics.items()])}
-    if plot and hist is not None:
-        plt.figure()
-        plt.plot(hist.history['loss'], lw=2.0, color='b', label='train')
-        plt.plot(hist.history['val_loss'], lw=2.0, color='r', label='val')
-        plt.title('Sentiment')
-        plt.xlabel('Epochs')
-        plt.ylabel('Cross-Entropy Loss')
-        plt.legend(loc='upper right')
-        plt.show()
     return metrics
 
 

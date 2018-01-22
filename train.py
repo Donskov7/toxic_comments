@@ -107,7 +107,8 @@ class Params(object):
                     'epochs_to_drop': 1,
                     'l2_weight_decay':0.0001,
                     'dropout_val': 0.5,
-                    'dense_dim': 32}
+                    'dense_dim': 32,
+                    'train_embeds': False}
 
         params = {'cnn': common_params,
                   'lstm': common_params,

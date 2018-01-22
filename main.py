@@ -30,12 +30,12 @@ def get_kwargs(kwargs):
     parser.add_argument('-l', '--logger', dest='logger', action='store', help='/path/to/log_file', type=str, default=None)
     parser.add_argument('--swear-words', dest='swear_words', action='store', help='/path/to/swear_words_file', type=str, default=None)
     parser.add_argument('--wrong-words', dest='wrong_words', action='store', help='/path/to/wrong_words_file', type=str, default=None)
-    parser.add_argument('--warm-start', dest='warm_start', action='store', help='true | false', type=bool, default=False)
-    parser.add_argument('--model-warm-start', dest='model_warm_start', action='store', help='CNN | LSTM | CONCAT | LOGREG | CATBOOST, warm start for several models available', type=str, default=[], nargs='+')
+    parser.add_argument('--warm-start', dest='warm_start', action='store_true')
     parser.add_argument('--format-embeds', dest='format_embeds', action='store', help='file | json | pickle | binary', type=str, default='file')
     parser.add_argument('--config', dest='config', action='store', help='/path/to/config.json', type=str, default=None)
     parser.add_argument('--train-clear', dest='train_clear', action='store', help='/path/to/save_train_clear_file', type=str, default='data/train_clear.csv')
     parser.add_argument('--test-clear', dest='test_clear', action='store', help='/path/to/save_test_clear_file', type=str, default='data/test_clear.csv')
+    parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str)
     for key, value in iteritems(parser.parse_args().__dict__):
         kwargs[key] = value
 
@@ -55,13 +55,13 @@ def main(*kargs, **kwargs):
     config = kwargs['config']
     train_clear = kwargs['train_clear']
     test_clear = kwargs['test_clear']
+    output_dir = kwargs['output_dir']
 
-    cnn_model_file = 'data/cnn.h5'
-    lstm_model_file = 'data/lstm.h5'
-    concat_model_file = 'data/concat.h5'
-    cnn_model_file = 'data/cnn.h5'
-    lr_model_file = 'data/{}_logreg.bin'
-    meta_catboost_model_file = 'data/{}_meta_catboost.bin'
+    cnn_model_file = os.path.join(output_dir, 'cnn.h5')
+    lstm_model_file = os.path.join(output_dir, 'lstm.h5')
+    concat_model_file = os.path.join(output_dir, 'concat.h5')
+    lr_model_file = os.path.join(output_dir, '{}_logreg.bin')
+    meta_catboost_model_file = os.path.join(output_dir, '{}_meta_catboost.bin')
 
     # ====Create logger====
     logger = Logger(logging.getLogger(), logger_fname)
@@ -149,7 +149,8 @@ def main(*kargs, **kwargs):
                     l2_weight_decay=params.get('cnn').get('l2_weight_decay'),
                     dropout_val=params.get('cnn').get('dropout_val'),
                     dense_dim=params.get('cnn').get('dense_dim'),
-                    add_sigmoid=True)
+                    add_sigmoid=True,
+                    train_embeds=params.get('cnn').get('train_embeds'))
         cnn_hist = train(x_train_nn,
                          y_train_nn,
                          cnn,
@@ -164,7 +165,7 @@ def main(*kargs, **kwargs):
                          logger=logger)
     y_cnn = cnn.predict(x_test_nn)
     save_predictions(test_df, cnn.predict(test_df_seq), target_labels, 'cnn')
-    metrics_cnn = get_metrics(y_test_nn, y_cnn, target_labels, hist=cnn_hist, plot=False)
+    metrics_cnn = get_metrics(y_test_nn, y_cnn, target_labels, hist=cnn_hist)
     logger.debug('CNN metrics:\n{}'.format(print_metrics(metrics_cnn)))
     cnn.save(cnn_model_file)
 
@@ -183,7 +184,8 @@ def main(*kargs, **kwargs):
                         lstm_dim=params.get('lstm').get('lstm_dim'),
                         dropout_val=params.get('lstm').get('dropout_val'),
                         dense_dim=params.get('lstm').get('dense_dim'),
-                        add_sigmoid=True)
+                        add_sigmoid=True,
+                        train_embeds=params.get('lstm').get('train_embeds'))
         lstm_hist = train(x_train_nn,
                           y_train_nn,
                           lstm,
@@ -198,7 +200,7 @@ def main(*kargs, **kwargs):
                           logger=logger)
     y_lstm = lstm.predict(x_test_nn)
     save_predictions(test_df, lstm.predict(test_df_seq), target_labels, 'lstm')
-    metrics_lstm = get_metrics(y_test_nn, y_lstm, target_labels, hist=lstm_hist, plot=False)
+    metrics_lstm = get_metrics(y_test_nn, y_lstm, target_labels, hist=lstm_hist)
     logger.debug('LSTM metrics:\n{}'.format(print_metrics(metrics_lstm)))
     lstm.save(lstm_model_file)
 
@@ -218,7 +220,8 @@ def main(*kargs, **kwargs):
                                   lstm_dim=params.get('concat').get('lstm_dim'),
                                   dropout_val=params.get('concat').get('dropout_val'),
                                   dense_dim=params.get('concat').get('dense_dim'),
-                                  add_sigmoid=True)
+                                  add_sigmoid=True,
+                                  train_embeds=params.get('concat').get('train_embeds'))
         concat_hist = train([x_train_nn, x_train_nn],
                             y_train_nn,
                             concat,
@@ -233,7 +236,7 @@ def main(*kargs, **kwargs):
                             logger=logger)
     y_concat = concat.predict([x_test_nn, x_test_nn])
     save_predictions(test_df, concat.predict([test_df_seq, test_df_seq]), target_labels, 'concat')
-    metrics_concat = get_metrics(y_test_nn, y_concat, target_labels, hist=concat_hist, plot=False)
+    metrics_concat = get_metrics(y_test_nn, y_concat, target_labels, hist=concat_hist)
     logger.debug('Concat_NN metrics:\n{}'.format(print_metrics(metrics_concat)))
     concat.save(concat_model_file)
 
@@ -302,7 +305,7 @@ def main(*kargs, **kwargs):
                                    rsm=params.get('catboost').get('rsm'),
                                    learning_rate=params.get('catboost').get('learning_rate'),
                                    device_config=params.get('catboost').get('device_config'))
-        model.fit(x_train_cb, y_train_cb[:, i], plot=True, eval_set=(x_val_cb, y_val_cb[:, i]), use_best_model=True)
+        model.fit(x_train_cb, y_train_cb[:, i], eval_set=(x_val_cb, y_val_cb[:, i]), use_best_model=True)
         y_hat_cb = model.predict_proba(x_val_cb)
         metrics_cb[label] = calc_metrics(y_val_cb[:, i], y_hat_cb[:, 1])
         models_cb.append(model)
