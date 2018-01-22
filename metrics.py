@@ -25,7 +25,7 @@ def calc_metrics(y_true, y_hat, max_steps=1000):
     return metrics
 
 
-def get_metrics(y_true, y_pred, target_labels, hist=None):
+def get_metrics(y_true, y_pred, target_labels):
     metrics = {}
     for i, label in enumerate(target_labels):
         metrics[label] = calc_metrics(np.array(y_true)[:, i], y_pred[:, i])

@@ -3,9 +3,10 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from keras import regularizers
-from keras.models import Sequential
+from keras.models import Sequential, Model
 from keras.layers import Dense, Dropout, Bidirectional, LSTM, Merge
 from keras.layers import Embedding, Conv1D, MaxPooling1D, GlobalMaxPooling1D
+from keras.layers import Input, Concatenate, GlobalAveragePooling1D
 
 
 def get_cnn(embedding_matrix, num_classes, embed_dim, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False):

@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from utils import load_data, Embeds, Logger
 from prepare_data import calc_text_uniq_words, clean_text, convert_text2seq, get_embedding_matrix, clean_seq, split_data, get_bow
-from models import get_cnn, get_lstm, get_concat_model, save_predictions, get_tfidf, get_most_informative_features
+from models import get_cnn, get_lstm, get_concat_model, save_predictions, get_tfidf, get_most_informative_features, get_dense_model
 from train import train, continue_train, Params
 from metrics import calc_metrics, get_metrics, print_metrics
 
@@ -35,7 +35,7 @@ def get_kwargs(kwargs):
     parser.add_argument('--config', dest='config', action='store', help='/path/to/config.json', type=str, default=None)
     parser.add_argument('--train-clear', dest='train_clear', action='store', help='/path/to/save_train_clear_file', type=str, default='data/train_clear.csv')
     parser.add_argument('--test-clear', dest='test_clear', action='store', help='/path/to/save_test_clear_file', type=str, default='data/test_clear.csv')
-    parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str)
+    parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str, default='.')
     for key, value in iteritems(parser.parse_args().__dict__):
         kwargs[key] = value
 
@@ -56,11 +56,13 @@ def main(*kargs, **kwargs):
     test_clear = kwargs['test_clear']
     output_dir = kwargs['output_dir']
 
-    cnn_model_file = os.path.join(output_dir, 'cnn.h5')
-    lstm_model_file = os.path.join(output_dir, 'lstm.h5')
-    concat_model_file = os.path.join(output_dir, 'concat.h5')
-    lr_model_file = os.path.join(output_dir, '{}_logreg.bin')
-    meta_catboost_model_file = os.path.join(output_dir, '{}_meta_catboost.bin')
+    model_file = {
+        'cnn': os.path.join(output_dir, 'cnn.h5'),
+        'lstm': os.path.join(output_dir, 'lstm.h5'),
+        'concat': os.path.join(output_dir, 'concat.h5'),
+        'lr': os.path.join(output_dir, '{}_logreg.bin'),
+        'catboost': os.path.join(output_dir, '{}_catboost.bin')
+    }
 
     # ====Create logger====
     logger = Logger(logging.getLogger(), logger_fname)
@@ -126,21 +128,14 @@ def main(*kargs, **kwargs):
     y = np.array(train_df[target_labels].values)
     x_train_nn, x_test_nn, y_train_nn, y_test_nn, train_idxs, test_idxs = split_data(x, y, test_size=0.2, shuffle=True, random_state=42)
     test_df_seq = np.array(test_df['comment_seq'].tolist())
+    y_nn = []
     logger.debug('X shape = {}'.format(np.shape(x_train_nn)))
 
     # ====Train models====
 
-    # Load params to the models
     params = Params(config)
 
-    # CNN
-    logger.info("training CNN ...")
-    if params.get('cnn').get('warm_start') and os.path.exists(params.get('cnn').get('model_file')):
-        logger.info('CNN warm starting...')
-        cnn = load_model(params.get('cnn').get('model_file'))
-        cnn_hist = None
-    else:
-        cnn = get_cnn(embedding_matrix,
+    cnn = get_cnn(embedding_matrix,
                     num_classes,
                     embed_dim,
                     max_seq_len,
@@ -150,32 +145,7 @@ def main(*kargs, **kwargs):
                     dense_dim=params.get('cnn').get('dense_dim'),
                     add_sigmoid=True,
                     train_embeds=params.get('cnn').get('train_embeds'))
-        cnn_hist = train(x_train_nn,
-                         y_train_nn,
-                         cnn,
-                         batch_size=params.get('cnn').get('batch_size'),
-                         num_epochs=params.get('cnn').get('num_epochs'),
-                         learning_rate=params.get('cnn').get('learning_rate'),
-                         early_stopping_delta=params.get('cnn').get('early_stopping_delta'),
-                         early_stopping_epochs=params.get('cnn').get('early_stopping_epochs'),
-                         use_lr_stratagy=params.get('cnn').get('use_lr_stratagy'),
-                         lr_drop_koef=params.get('cnn').get('lr_drop_koef'),
-                         epochs_to_drop=params.get('cnn').get('epochs_to_drop'),
-                         logger=logger)
-    y_cnn = cnn.predict(x_test_nn)
-    save_predictions(test_df, cnn.predict(test_df_seq), target_labels, 'cnn')
-    metrics_cnn = get_metrics(y_test_nn, y_cnn, target_labels, hist=cnn_hist)
-    logger.debug('CNN metrics:\n{}'.format(print_metrics(metrics_cnn)))
-    cnn.save(cnn_model_file)
-
-    # LSTM
-    logger.info("training LSTM ...")
-    if params.get('lstm').get('warm_start') and os.path.exists(params.get('lstm').get('model_file')):
-        logger.info('LSTM warm starting...')
-        lstm = load_model(params.get('lstm').get('model_file'))
-        lstm_hist = None
-    else:
-        lstm = get_lstm(embedding_matrix,
+    lstm = get_lstm(embedding_matrix,
                         num_classes,
                         embed_dim,
                         max_seq_len,
@@ -185,32 +155,7 @@ def main(*kargs, **kwargs):
                         dense_dim=params.get('lstm').get('dense_dim'),
                         add_sigmoid=True,
                         train_embeds=params.get('lstm').get('train_embeds'))
-        lstm_hist = train(x_train_nn,
-                          y_train_nn,
-                          lstm,
-                          batch_size=params.get('lstm').get('batch_size'),
-                          num_epochs=params.get('lstm').get('num_epochs'),
-                          learning_rate=params.get('lstm').get('learning_rate'),
-                          early_stopping_delta=params.get('lstm').get('early_stopping_delta'),
-                          early_stopping_epochs=params.get('lstm').get('early_stopping_epochs'),
-                          use_lr_stratagy=params.get('lstm').get('use_lr_stratagy'),
-                          lr_drop_koef=params.get('lstm').get('lr_drop_koef'),
-                          epochs_to_drop=params.get('lstm').get('epochs_to_drop'),
-                          logger=logger)
-    y_lstm = lstm.predict(x_test_nn)
-    save_predictions(test_df, lstm.predict(test_df_seq), target_labels, 'lstm')
-    metrics_lstm = get_metrics(y_test_nn, y_lstm, target_labels, hist=lstm_hist)
-    logger.debug('LSTM metrics:\n{}'.format(print_metrics(metrics_lstm)))
-    lstm.save(lstm_model_file)
-
-    # CONCAT
-    logger.info("training Concat NN (LSTM + CNN) ...")
-    if params.get('concat').get('warm_start') and os.path.exists(params.get('concat').get('model_file')):
-        logger.info('Concat NN warm starting...')
-        concat = load_model(params.get('concat').get('model_file'))
-        concat_hist = None
-    else:
-        concat = get_concat_model(embedding_matrix,
+    concat = get_concat_model(embedding_matrix,
                                   num_classes,
                                   embed_dim,
                                   max_seq_len,
@@ -221,23 +166,44 @@ def main(*kargs, **kwargs):
                                   dense_dim=params.get('concat').get('dense_dim'),
                                   add_sigmoid=True,
                                   train_embeds=params.get('concat').get('train_embeds'))
-        concat_hist = train([x_train_nn, x_train_nn],
-                            y_train_nn,
-                            concat,
-                            batch_size=params.get('concat').get('batch_size'),
-                            num_epochs=params.get('concat').get('num_epochs'),
-                            learning_rate=params.get('concat').get('learning_rate'),
-                            early_stopping_delta=params.get('concat').get('early_stopping_delta'),
-                            early_stopping_epochs=params.get('concat').get('early_stopping_epochs'),
-                            use_lr_stratagy=params.get('concat').get('use_lr_stratagy'),
-                            lr_drop_koef=params.get('concat').get('lr_drop_koef'),
-                            epochs_to_drop=params.get('concat').get('epochs_to_drop'),
-                            logger=logger)
-    y_concat = concat.predict([x_test_nn, x_test_nn])
-    save_predictions(test_df, concat.predict([test_df_seq, test_df_seq]), target_labels, 'concat')
-    metrics_concat = get_metrics(y_test_nn, y_concat, target_labels, hist=concat_hist)
-    logger.debug('Concat_NN metrics:\n{}'.format(print_metrics(metrics_concat)))
-    concat.save(concat_model_file)
+
+    models = []
+    for model_label in params.get('models'):
+        if model_label == 'cnn':
+            models.append([model_label, cnn])
+        elif model_label == 'lstm':
+            models.append([model_label, lstm])
+        elif model_label == 'concat':
+            models.append([model_label, concat])
+        else:
+            raise ValueError('Invalid model {}. Model hasn`t defined.'.format(model_label))
+
+    for i in range(models):
+        model_label, model = models[i]
+        logger.info("training {} ...".format(model_label))
+        if params.get(model_label).get('warm_start') and os.path.exists(params.get(model_label).get('model_file')):
+            logger.info('{} warm starting...'.format(model_label))
+            model = load_model(params.get(model_label).get('model_file'))
+            models[i][1] = model
+        else:
+            hist = train(x_train_nn,
+                         y_train_nn,
+                         model,
+                         batch_size=params.get(model_label).get('batch_size'),
+                         num_epochs=params.get(model_label).get('num_epochs'),
+                         learning_rate=params.get(model_label).get('learning_rate'),
+                         early_stopping_delta=params.get(model_label).get('early_stopping_delta'),
+                         early_stopping_epochs=params.get(model_label).get('early_stopping_epochs'),
+                         use_lr_strategy=params.get(model_label).get('use_lr_strategy'),
+                         lr_drop_koef=params.get(model_label).get('lr_drop_koef'),
+                         epochs_to_drop=params.get(model_label).get('epochs_to_drop'),
+                         logger=logger)
+        y_nn.append(model.predict(x_test_nn))
+        save_predictions(test_df, model.predict(test_df_seq), target_labels, model_label)
+        metrics = get_metrics(y_test_nn, y_nn[-1], target_labels)
+        logger.debug('{} metrics:\n{}'.format(model_label, print_metrics(metrics)))
+        model.save(model_file[model_label])
+
 
     # TFIDF + LogReg
     logger.info('training LogReg over tfidf...')
@@ -255,9 +221,9 @@ def main(*kargs, **kwargs):
         test_df['tfidf_{}'.format(label)] = model.predict_proba(test_tfidf)[:,1]
         metrics_lr[label] = calc_metrics(y_test_nn[:, i], y_tfidf[-1])
         models_lr.append(model)
-        joblib.dump(model, lr_model_file.format(label))
+        joblib.dump(model, model_file['lr'].format(label))
     metrics_lr['Avg logloss'] = np.mean([metric['Logloss'] for label, metric in metrics_lr.items()])
-    logger.debug('LogReg(TFIDF) metrics:\n{}'.format(metrics_lr))
+    logger.debug('LogReg(TFIDF) metrics:\n{}'.format(print_metrics(metrics_lr)))
 
     # Bow for catboost
     if params.get('catboost').get('add_bow'):
@@ -288,7 +254,8 @@ def main(*kargs, **kwargs):
 
     x_train_catboost = []
     y_train_catboost = y_test_nn
-    features = [text_len_features, y_cnn, y_lstm, y_concat, np.array(y_tfidf).T]
+    features = y_nn
+    features.extend([text_len_features, np.array(y_tfidf).T])
     if params.get('catboost').get('add_bow'):
         features.append(val_bow)
     for feature in zip(*features):
@@ -308,19 +275,19 @@ def main(*kargs, **kwargs):
         y_hat_cb = model.predict_proba(x_val_cb)
         metrics_cb[label] = calc_metrics(y_val_cb[:, i], y_hat_cb[:, 1])
         models_cb.append(model)
-        joblib.dump(model, meta_catboost_model_file.format(label))
+        joblib.dump(model, model_file['catboost'].format(label))
     metrics_cb['Avg logloss'] = np.mean([metric['Logloss'] for label,metric in metrics_cb.items()])
-    logger.debug('CatBoost metrics:\n{}'.format(metrics_cb))
+    logger.debug('CatBoost metrics:\n{}'.format(print_metrics(metrics_cb)))
 
     # ====Predict====
     logger.info('Applying models...')
     text_len_features = test_df[['text_len', 'text_unique_len', 'text_unique_koef']].values
-    y_cnn_test = test_df[['cnn_{}'.format(label) for label in target_labels]].values
-    y_lstm_test = test_df[['lstm_{}'.format(label) for label in target_labels]].values
-    y_concat_test = test_df[['concat_{}'.format(label) for label in target_labels]].values
     y_tfidf_test = test_df[['tfidf_{}'.format(label) for label in target_labels]].values
     x_test_cb = []
-    features = [text_len_features, y_cnn_test, y_lstm_test, y_concat_test, y_tfidf_test]
+    features = []
+    for model_label, _ in models:
+        features.append(test_df[['{}_{}'.format(model_label, label) for label in target_labels]].values)
+    features.extend([text_len_features, y_tfidf_test])
     if params.get('catboost').get('add_bow'):
         features.append(test_bow)
     for feature in tqdm(zip(*features)):

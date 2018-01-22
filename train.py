@@ -4,6 +4,11 @@ from math import pow, floor
 from keras import optimizers
 from keras.callbacks import EarlyStopping, LearningRateScheduler, Callback
 
+try:
+    import nirvana_dl
+except ImportError:
+    pass
+
 
 def step_decay(initial_lr, lr_drop_koef, epochs_to_drop, epoch):
     return initial_lr * pow(lr_drop_koef, floor((1 + epoch) / epochs_to_drop))
@@ -90,6 +95,8 @@ class Params(object):
     def _load_from_file(self, fname):
         if fname is None:
             return {}
+        elif fname == 'nirvana':
+            return nirvana_dl.params()
         with open(fname) as f:
             return json.loads(f.read())
 
@@ -110,7 +117,8 @@ class Params(object):
                     'dense_dim': 32,
                     'train_embeds': False}
 
-        params = {'cnn': common_params,
+        params = {
+                  'cnn': common_params,
                   'lstm': common_params,
                   'concat': common_params}
 
