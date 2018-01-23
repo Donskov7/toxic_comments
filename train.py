@@ -116,10 +116,6 @@ class Params(object):
                   'lstm': common_params,
                   'concat': common_params}
 
-        params['dense']['dense_dim'] = 100
-        params['dense']['n_layers'] = 10
-        params['dense']['concat'] = 0
-        params['dense']['pool'] = 'max'
         params['cnn']['num_filters'] = 64
         params['lstm']['lstm_dim'] = 50
         params['concat']['num_filters'] = 64
