@@ -1,0 +1,12 @@
+six
+numpy
+scipy
+sklearn
+catboost
+pandas
+h5py
+tensorflow
+keras
+nltk
+tqdm
+gensim
