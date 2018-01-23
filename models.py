@@ -3,15 +3,16 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from keras import regularizers
+from keras.utils import multi_gpu_model
 from keras.models import Sequential, Model
-from keras.layers import Dense, Dropout, Bidirectional, LSTM, Merge
+from keras.layers import Dense, Dropout, Bidirectional, LSTM, Merge, BatchNormalization
 from keras.layers import Embedding, Conv1D, MaxPooling1D, GlobalMaxPooling1D
-from keras.layers import Input, Concatenate, GlobalAveragePooling1D
+from keras.layers import Input, Concatenate, GlobalAveragePooling1D, concatenate
 
 
-def get_cnn(embedding_matrix, num_classes, embed_dim, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False):
+def get_cnn(embedding_matrix, num_classes, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0):
     model = Sequential()
-    model.add(Embedding(len(embedding_matrix), embed_dim, weights=[embedding_matrix], input_length=max_seq_len, trainable=train_embeds))
+    model.add(Embedding(embedding_matrix.shape[0], embedding_matrix.shape[1], weights=[embedding_matrix], input_length=max_seq_len, trainable=train_embeds))
     model.add(Conv1D(num_filters, 7, activation='relu', padding='same'))
     model.add(MaxPooling1D(2))
     model.add(Conv1D(num_filters, 7, activation='relu', padding='same'))
@@ -20,12 +21,14 @@ def get_cnn(embedding_matrix, num_classes, embed_dim, max_seq_len, num_filters=6
     model.add(Dense(dense_dim, activation='relu', kernel_regularizer=regularizers.l2(l2_weight_decay)))
     if add_sigmoid:
         model.add(Dense(num_classes, activation='sigmoid'))
+    if gpus > 0:
+        model = multi_gpu_model(model, gpus=gpus)
     return model
 
 
-def get_lstm(embedding_matrix, num_classes, embed_dim, max_seq_len, l2_weight_decay=0.0001, lstm_dim=50, dropout_val=0.3, dense_dim=32, add_sigmoid=True, train_embeds=False):
+def get_lstm(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, lstm_dim=50, dropout_val=0.3, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0):
     model = Sequential()
-    model.add(Embedding(len(embedding_matrix), embed_dim, weights=[embedding_matrix], input_length=max_seq_len, trainable=train_embeds))
+    model.add(Embedding(embedding_matrix.shape[0], embedding_matrix.shape[1], weights=[embedding_matrix], input_length=max_seq_len, trainable=train_embeds))
     model.add(Bidirectional(LSTM(lstm_dim, return_sequences=True)))
     model.add(GlobalMaxPooling1D())
     model.add(Dropout(dropout_val))
@@ -34,19 +37,51 @@ def get_lstm(embedding_matrix, num_classes, embed_dim, max_seq_len, l2_weight_de
     model.add(Dense(dense_dim, activation='relu', kernel_regularizer=regularizers.l2(l2_weight_decay)))
     if add_sigmoid:
         model.add(Dense(num_classes, activation="sigmoid"))
+    if gpus > 0:
+        model = multi_gpu_model(model, gpus=gpus)
     return model
 
 
 
-def get_concat_model(embedding_matrix, num_classes, embed_dim, max_seq_len, num_filters=64, l2_weight_decay=0.0001, lstm_dim=50, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False):
-    model_lstm = get_lstm(embedding_matrix, num_classes, embed_dim, max_seq_len, l2_weight_decay, lstm_dim, dropout_val, dense_dim, add_sigmoid=False, train_embeds=train_embeds)
-    model_cnn = get_cnn(embedding_matrix, num_classes, embed_dim, max_seq_len, num_filters, l2_weight_decay, dropout_val, dense_dim, add_sigmoid=False, train_embeds=train_embeds)
+def get_concat_model(embedding_matrix, num_classes, max_seq_len, n_layers=10, concat=0, pool='max', num_filters=64, l2_weight_decay=0.0001, lstm_dim=50, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0):
+    model_dense = get_dense_model(embedding_matrix,
+                                  num_classes,
+                                  max_seq_len,
+                                  100,
+                                  n_layers,
+                                  concat,
+                                  dropout_val,
+                                  l2_weight_decay,
+                                  pool,
+                                  add_sigmoid=False,
+                                  train_embeds=train_embeds)
+    model_lstm = get_lstm(embedding_matrix,
+                          num_classes,
+                          max_seq_len,
+                          l2_weight_decay,
+                          lstm_dim,
+                          dropout_val,
+                          dense_dim,
+                          add_sigmoid=False,
+                          train_embeds=train_embeds)
+    model_cnn = get_cnn(embedding_matrix,
+                        num_classes,
+                        max_seq_len,
+                        num_filters,
+                        l2_weight_decay,
+                        dropout_val,
+                        dense_dim,
+                        add_sigmoid=False,
+                        train_embeds=train_embeds)
     model = Sequential()
-    model.add(Merge([model_lstm, model_cnn], mode='concat'))
+    model.add(Merge([model_lstm, model_cnn, model_dense], mode = 'concat'))
+    model.add(BatchNormalization())
     model.add(Dropout(dropout_val))
     model.add(Dense(dense_dim, activation='relu', kernel_regularizer=regularizers.l2(l2_weight_decay)))
     if add_sigmoid:
         model.add(Dense(num_classes, activation="sigmoid"))
+    if gpus > 0:
+        model = multi_gpu_model(model, gpus=gpus)
     return model
 
 

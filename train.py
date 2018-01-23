@@ -29,10 +29,10 @@ class LossHistory(Callback):
         self.lr.append(step_decay(self.initial_lr, self.lr_drop_koef, self.epochs_to_drop, len(self.losses)))
 
 
-def define_callbacks(early_stopping_delta, early_stopping_epochs, use_lr_stratagy=True, initial_lr=0.005, lr_drop_koef=0.66, epochs_to_drop=5):
+def define_callbacks(early_stopping_delta, early_stopping_epochs, use_lr_strategy=True, initial_lr=0.005, lr_drop_koef=0.66, epochs_to_drop=5):
     early_stopping = EarlyStopping(monitor='val_loss', min_delta=early_stopping_delta, patience=early_stopping_epochs, verbose=1)
     callbacks_list = [early_stopping]
-    if use_lr_stratagy:
+    if use_lr_strategy:
         epochs_to_drop = float(epochs_to_drop)
         loss_history = LossHistory(initial_lr, lr_drop_koef, epochs_to_drop)
         lrate = LearningRateScheduler(lambda epoch: step_decay(initial_lr, lr_drop_koef, epochs_to_drop, epoch))
@@ -41,7 +41,7 @@ def define_callbacks(early_stopping_delta, early_stopping_epochs, use_lr_stratag
     return callbacks_list
 
 
-def train(x_train, y_train, model, batch_size, num_epochs, learning_rate=0.001, early_stopping_delta=0.0, early_stopping_epochs=10, use_lr_stratagy=True, lr_drop_koef=0.66, epochs_to_drop=5, logger=None):
+def train(x_train, y_train, model, batch_size, num_epochs, learning_rate=0.001, early_stopping_delta=0.0, early_stopping_epochs=10, use_lr_strategy=True, lr_drop_koef=0.66, epochs_to_drop=5, logger=None):
     adam = optimizers.Adam(lr=learning_rate)
     model.compile(loss='binary_crossentropy', optimizer=adam, metrics=['accuracy'])
     if logger is not None:
@@ -51,7 +51,7 @@ def train(x_train, y_train, model, batch_size, num_epochs, learning_rate=0.001, 
 
     callbacks_list = define_callbacks(early_stopping_delta,
                                     early_stopping_epochs,
-                                    use_lr_stratagy=use_lr_stratagy,
+                                    use_lr_strategy=use_lr_strategy,
                                     initial_lr=learning_rate,
                                     lr_drop_koef=lr_drop_koef,
                                     epochs_to_drop=epochs_to_drop)
@@ -67,10 +67,10 @@ def train(x_train, y_train, model, batch_size, num_epochs, learning_rate=0.001, 
     return hist
 
 
-def continue_train(x_train, y_train, model, batch_size, num_epochs, learning_rate_decay, learning_rate=0.001, early_stopping_delta=0.0, early_stopping_iters=10, use_lr_stratagy=True, lr_drop_koef=0.66, epochs_to_drop=5):
+def continue_train(x_train, y_train, model, batch_size, num_epochs, learning_rate_decay, learning_rate=0.001, early_stopping_delta=0.0, early_stopping_iters=10, use_lr_strategy=True, lr_drop_koef=0.66, epochs_to_drop=5):
     callbacks_list = define_callbacks(early_stopping_delta,
                                     early_stopping_iters,
-                                    use_lr_stratagy=use_lr_stratagy,
+                                    use_lr_strategy=use_lr_strategy,
                                     initial_lr=learning_rate,
                                     lr_drop_koef=lr_drop_koef,
                                     epochs_to_drop=epochs_to_drop)
@@ -109,7 +109,7 @@ class Params(object):
                     'learning_rate': 0.0001,
                     'early_stopping_delta': 0.001,
                     'early_stopping_epochs': 2,
-                    'use_lr_stratagy': True,
+                    'use_lr_strategy': True,
                     'lr_drop_koef': 0.5,
                     'epochs_to_drop': 1,
                     'l2_weight_decay':0.0001,
@@ -117,15 +117,23 @@ class Params(object):
                     'dense_dim': 32,
                     'train_embeds': False}
 
-        params = {
+        params = {'models': [],
+                  'dense': common_params,
                   'cnn': common_params,
                   'lstm': common_params,
                   'concat': common_params}
 
+        params['dense']['dense_dim'] = 100
+        params['dense']['n_layers'] = 10
+        params['dense']['concat'] = 0
+        params['dense']['pool'] = 'max'
         params['cnn']['num_filters'] = 64
         params['lstm']['lstm_dim'] = 50
         params['concat']['num_filters'] = 64
         params['concat']['lstm_dim'] = 50
+        params['concat']['n_layers'] = 10
+        params['concat']['concat'] = 0
+        params['concat']['pool'] = 'max'
 
         params['catboost'] = {
                     'add_bow': False,
@@ -140,8 +148,11 @@ class Params(object):
     def _update_params(self, params):
         if params is not None and params:
             for key in params.keys():
-                self._params.setdefault(key, {})
-                self._params[key].update(params[key])
+                if isinstance(params[key], dict):
+                    self._params.setdefault(key, {})
+                    self._params[key].update(params[key])
+                else:
+                    self._params[key] = params[key]
 
     def get(self, key):
         return self._params.get(key, None)

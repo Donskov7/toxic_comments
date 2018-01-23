@@ -11,6 +11,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.externals import joblib
 from keras.models import load_model
 
+from tensorflow.python.client import device_lib
+
 from nltk.tokenize import RegexpTokenizer
 from tqdm import tqdm
 
@@ -36,6 +38,7 @@ def get_kwargs(kwargs):
     parser.add_argument('--train-clear', dest='train_clear', action='store', help='/path/to/save_train_clear_file', type=str, default='data/train_clear.csv')
     parser.add_argument('--test-clear', dest='test_clear', action='store', help='/path/to/save_test_clear_file', type=str, default='data/test_clear.csv')
     parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str, default='.')
+    parser.add_argument('--gpus', dest='gpus', action='store', help='count GPUs', type=int, default=0)
     for key, value in iteritems(parser.parse_args().__dict__):
         kwargs[key] = value
 
@@ -55,8 +58,10 @@ def main(*kargs, **kwargs):
     train_clear = kwargs['train_clear']
     test_clear = kwargs['test_clear']
     output_dir = kwargs['output_dir']
+    gpus = kwargs['gpus']
 
     model_file = {
+        'dense': os.path.join(output_dir, 'dense.h5'),
         'cnn': os.path.join(output_dir, 'cnn.h5'),
         'lstm': os.path.join(output_dir, 'lstm.h5'),
         'concat': os.path.join(output_dir, 'concat.h5'),
@@ -66,6 +71,9 @@ def main(*kargs, **kwargs):
 
     # ====Create logger====
     logger = Logger(logging.getLogger(), logger_fname)
+
+    # ====Detect GPUs====
+    logger.debug(device_lib.list_local_devices())
 
     # ====Load data====
     logger.info('Loading data...')
@@ -137,40 +145,45 @@ def main(*kargs, **kwargs):
 
     cnn = get_cnn(embedding_matrix,
                     num_classes,
-                    embed_dim,
                     max_seq_len,
                     num_filters=params.get('cnn').get('num_filters'),
                     l2_weight_decay=params.get('cnn').get('l2_weight_decay'),
                     dropout_val=params.get('cnn').get('dropout_val'),
                     dense_dim=params.get('cnn').get('dense_dim'),
                     add_sigmoid=True,
-                    train_embeds=params.get('cnn').get('train_embeds'))
+                    train_embeds=params.get('cnn').get('train_embeds'),
+                    gpus=gpus)
     lstm = get_lstm(embedding_matrix,
                         num_classes,
-                        embed_dim,
                         max_seq_len,
                         l2_weight_decay=params.get('lstm').get('l2_weight_decay'),
                         lstm_dim=params.get('lstm').get('lstm_dim'),
                         dropout_val=params.get('lstm').get('dropout_val'),
                         dense_dim=params.get('lstm').get('dense_dim'),
                         add_sigmoid=True,
-                        train_embeds=params.get('lstm').get('train_embeds'))
+                        train_embeds=params.get('lstm').get('train_embeds'),
+                        gpus=gpus)
     concat = get_concat_model(embedding_matrix,
                                   num_classes,
-                                  embed_dim,
                                   max_seq_len,
+                                  n_layers=params.get('concat').get('n_layers'),
+                                  concat=params.get('concat').get('concat'),
+                                  pool=params.get('concat').get('pool'),
                                   num_filters=params.get('concat').get('num_filters'),
                                   l2_weight_decay=params.get('concat').get('l2_weight_decay'),
                                   lstm_dim=params.get('concat').get('lstm_dim'),
                                   dropout_val=params.get('concat').get('dropout_val'),
                                   dense_dim=params.get('concat').get('dense_dim'),
                                   add_sigmoid=True,
-                                  train_embeds=params.get('concat').get('train_embeds'))
+                                  train_embeds=params.get('concat').get('train_embeds'),
+                                  gpus=gpus)
 
     models = []
     for model_label in params.get('models'):
         if model_label == 'cnn':
             models.append([model_label, cnn])
+        elif model_label == 'dense':
+            models.append([model_label, dense])
         elif model_label == 'lstm':
             models.append([model_label, lstm])
         elif model_label == 'concat':
@@ -178,7 +191,7 @@ def main(*kargs, **kwargs):
         else:
             raise ValueError('Invalid model {}. Model hasn`t defined.'.format(model_label))
 
-    for i in range(models):
+    for i in range(len(models)):
         model_label, model = models[i]
         logger.info("training {} ...".format(model_label))
         if params.get(model_label).get('warm_start') and os.path.exists(params.get(model_label).get('model_file')):
@@ -202,6 +215,7 @@ def main(*kargs, **kwargs):
         save_predictions(test_df, model.predict(test_df_seq), target_labels, model_label)
         metrics = get_metrics(y_test_nn, y_nn[-1], target_labels)
         logger.debug('{} metrics:\n{}'.format(model_label, print_metrics(metrics)))
+        logger.debug('Model path = {}'.format(model_file[model_label]))
         model.save(model_file[model_label])
 
 
@@ -222,7 +236,7 @@ def main(*kargs, **kwargs):
         metrics_lr[label] = calc_metrics(y_test_nn[:, i], y_tfidf[-1])
         models_lr.append(model)
         joblib.dump(model, model_file['lr'].format(label))
-    metrics_lr['Avg logloss'] = np.mean([metric['Logloss'] for label, metric in metrics_lr.items()])
+    metrics_lr['Avg'] = {'Logloss': np.mean([metric['Logloss'] for label, metric in metrics_lr.items()])}
     logger.debug('LogReg(TFIDF) metrics:\n{}'.format(print_metrics(metrics_lr)))
 
     # Bow for catboost
@@ -276,7 +290,7 @@ def main(*kargs, **kwargs):
         metrics_cb[label] = calc_metrics(y_val_cb[:, i], y_hat_cb[:, 1])
         models_cb.append(model)
         joblib.dump(model, model_file['catboost'].format(label))
-    metrics_cb['Avg logloss'] = np.mean([metric['Logloss'] for label,metric in metrics_cb.items()])
+    metrics_cb['Avg'] = {'Logloss': np.mean([metric['Logloss'] for label,metric in metrics_cb.items()])}
     logger.debug('CatBoost metrics:\n{}'.format(print_metrics(metrics_cb)))
 
     # ====Predict====
