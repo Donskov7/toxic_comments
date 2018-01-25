@@ -38,6 +38,8 @@ def get_kwargs(kwargs):
     parser.add_argument('--train-clear', dest='train_clear', action='store', help='/path/to/save_train_clear_file', type=str, default='data/train_clear.csv')
     parser.add_argument('--test-clear', dest='test_clear', action='store', help='/path/to/save_test_clear_file', type=str, default='data/test_clear.csv')
     parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str, default='.')
+    parser.add_argument('--norm-prob', dest='norm_prob', action='store_true', type=bool)
+    parser.add_argument('--norm-prob-koef', dest='norm_prob_koef', action='store', type=float, default=0.7)
     parser.add_argument('--gpus', dest='gpus', action='store', help='count GPUs', type=int, default=0)
     for key, value in iteritems(parser.parse_args().__dict__):
         kwargs[key] = value
@@ -58,6 +60,8 @@ def main(*kargs, **kwargs):
     train_clear = kwargs['train_clear']
     test_clear = kwargs['test_clear']
     output_dir = kwargs['output_dir']
+    norm_prob = kwargs['norm_prob']
+    norm_prob_koef = kwargs['norm_prob_koef']
     gpus = kwargs['gpus']
 
     model_file = {
@@ -310,6 +314,11 @@ def main(*kargs, **kwargs):
     for label, model in zip(target_labels, models_cb):
         pred = model.predict_proba(x_test_cb)
         test_df[label] = np.array(list(pred))[:, 1]
+
+    # ====Normalize probabilities====
+    if norm_prob:
+        for label in target_labels:
+            test_df[label] = norm_prob_koef * test_df[label]
 
     # ====Save results====
     logger.info('Saving results...')
