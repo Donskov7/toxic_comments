@@ -17,29 +17,28 @@ from nltk.tokenize import RegexpTokenizer
 from tqdm import tqdm
 
 from utils import load_data, Embeds, Logger
-from prepare_data import calc_text_uniq_words, clean_text, convert_text2seq, get_embedding_matrix, clean_seq, split_data, get_bow
-from models import get_cnn, get_lstm, get_concat_model, save_predictions, get_tfidf, get_most_informative_features, get_dense_model
+from features import calc_text_uniq_words, get_bow, get_tfidf, get_most_informative_features
+from preprocessing import clean_text, convert_text2seq, get_embedding_matrix, split_data
+from models import cnn, dense, rnn, save_predictions
 from train import train, continue_train, Params
 from metrics import calc_metrics, get_metrics, print_metrics
 
 
 def get_kwargs(kwargs):
-    parser = argparse.ArgumentParser(description='-f TRAIN_FILE -t TEST_FILE -o OUTPUT_FILE -e EMBEDS_FILE [-l LOGGER_FILE] [--swear-words SWEAR_FILE] [--wrong-words WRONG_WORDS_FILE] [--warm-start FALSE] [--format-embeds FALSE]')
+    parser = argparse.ArgumentParser(description='-f TRAIN_FILE -t TEST_FILE -o OUTPUT_FILE -e EMBEDS_FILE [-l LOGGER_FILE] [--swear-words SWEAR_FILE] [--wrong-words WRONG_WORDS_FILE] [--format-embeds FALSE]')
     parser.add_argument('-f', '--train', dest='train', action='store', help='/path/to/trian_file', type=str)
     parser.add_argument('-t', '--test', dest='test', action='store', help='/path/to/test_file', type=str)
     parser.add_argument('-o', '--output', dest='output', action='store', help='/path/to/output_file', type=str)
     parser.add_argument('-e', '--embeds', dest='embeds', action='store', help='/path/to/embeds_file', type=str)
     parser.add_argument('-l', '--logger', dest='logger', action='store', help='/path/to/log_file', type=str, default=None)
+    parser.add_argument('--mode', dest='mode', action='store', help='preprocess / train / all', type=str, default='all')
     parser.add_argument('--swear-words', dest='swear_words', action='store', help='/path/to/swear_words_file', type=str, default=None)
     parser.add_argument('--wrong-words', dest='wrong_words', action='store', help='/path/to/wrong_words_file', type=str, default=None)
-    parser.add_argument('--warm-start', dest='warm_start', action='store_true')
     parser.add_argument('--format-embeds', dest='format_embeds', action='store', help='file | json | pickle | binary', type=str, default='file')
     parser.add_argument('--config', dest='config', action='store', help='/path/to/config.json', type=str, default=None)
-    parser.add_argument('--train-clear', dest='train_clear', action='store', help='/path/to/save_train_clear_file', type=str, default='data/train_clear.csv')
-    parser.add_argument('--test-clear', dest='test_clear', action='store', help='/path/to/save_test_clear_file', type=str, default='data/test_clear.csv')
     parser.add_argument('--output-dir', dest='output_dir', action='store', help='/path/to/dir', type=str, default='.')
-    parser.add_argument('--norm-prob', dest='norm_prob', action='store_true', type=bool)
-    parser.add_argument('--norm-prob-koef', dest='norm_prob_koef', action='store', type=float, default=0.7)
+    parser.add_argument('--norm-prob', dest='norm_prob', action='store_true')
+    parser.add_argument('--norm-prob-koef', dest='norm_prob_koef', action='store', type=float, default=1)
     parser.add_argument('--gpus', dest='gpus', action='store', help='count GPUs', type=int, default=0)
     for key, value in iteritems(parser.parse_args().__dict__):
         kwargs[key] = value
@@ -52,13 +51,11 @@ def main(*kargs, **kwargs):
     result_fname = kwargs['output']
     embeds_fname = kwargs['embeds']
     logger_fname = kwargs['logger']
+    mode = kwargs['mode']
     swear_words_fname = kwargs['swear_words']
     wrong_words_fname = kwargs['wrong_words']
-    warm_start = kwargs['warm_start']
     format_embeds = kwargs['format_embeds']
     config = kwargs['config']
-    train_clear = kwargs['train_clear']
-    test_clear = kwargs['test_clear']
     output_dir = kwargs['output_dir']
     norm_prob = kwargs['norm_prob']
     norm_prob_koef = kwargs['norm_prob_koef']
@@ -101,14 +98,15 @@ def main(*kargs, **kwargs):
     embeds = Embeds(embeds_fname, 'fasttext', format=format_embeds)
 
     # ====Clean texts====
-    logger.info('Cleaning text...')
-    if warm_start:
-        logger.info('Use warm start...')
-    else:
-        train_df['comment_text_clear'] = clean_text(train_df['comment_text'], tokinizer, wrong_words_dict, swear_words, regexps)
-        test_df['comment_text_clear'] = clean_text(test_df['comment_text'], tokinizer, wrong_words_dict, swear_words, regexps)
-        train_df.to_csv(train_clear, index=False)
-        test_df.to_csv(test_clear, index=False)
+    if mode in ('preprocess', 'all'):
+        logger.info('Cleaning text...')
+        train_df['comment_text_clear'] = clean_text(train_df['comment_text'], tokinizer, wrong_words_dict, regexps)
+        test_df['comment_text_clear'] = clean_text(test_df['comment_text'], tokinizer, wrong_words_dict, regexps)
+        train_df.to_csv(os.path.join(output_dir, 'train_clear.csv'), index=False)
+        test_df.to_csv(os.path.join(output_dir, 'test_clear.csv'), index=False)
+
+    if mode == 'preprocess':
+        return True
 
     # ====Calculate maximum seq length====
     logger.info('Calc text length...')
@@ -123,17 +121,13 @@ def main(*kargs, **kwargs):
     logger.info('Converting texts to sequences...')
     max_words = 100000
 
-    train_df['comment_seq'], test_df['comment_seq'], word_index = convert_text2seq(train_df['comment_text_clear'].tolist(), test_df['comment_text_clear'].tolist(), max_words, max_seq_len, lower=True, char_level=False, uniq=True)
+    train_df['comment_seq'], test_df['comment_seq'], word_index = convert_text2seq(train_df['comment_text_clear'].tolist(), test_df['comment_text_clear'].tolist(), max_words, max_seq_len, embeds, lower=True, char_level=False, uniq=True, use_only_exists_words=True)
     logger.debug('Dictionary size = {}'.format(len(word_index)))
 
     logger.info('Preparing embedding matrix...')
     embedding_matrix, words_not_found = get_embedding_matrix(embed_dim, embeds, max_words, word_index)
     logger.debug('Embedding matrix shape = {}'.format(np.shape(embedding_matrix)))
     logger.debug('Number of null word embeddings = {}'.format(np.sum(np.sum(embedding_matrix, axis=1) == 0)))
-
-    logger.info('Deleting unknown words from seq...')
-    train_df['comment_seq'] = clean_seq(train_df['comment_seq'], embedding_matrix, max_seq_len)
-    test_df['comment_seq'] = clean_seq(test_df['comment_seq'], embedding_matrix, max_seq_len)
 
     # ====Train/test split data====
     x = np.array(train_df['comment_seq'].tolist())
@@ -147,51 +141,83 @@ def main(*kargs, **kwargs):
 
     params = Params(config)
 
-    cnn = get_cnn(embedding_matrix,
-                    num_classes,
-                    max_seq_len,
-                    num_filters=params.get('cnn').get('num_filters'),
-                    l2_weight_decay=params.get('cnn').get('l2_weight_decay'),
-                    dropout_val=params.get('cnn').get('dropout_val'),
-                    dense_dim=params.get('cnn').get('dense_dim'),
-                    add_sigmoid=True,
-                    train_embeds=params.get('cnn').get('train_embeds'),
-                    gpus=gpus)
-    lstm = get_lstm(embedding_matrix,
-                        num_classes,
-                        max_seq_len,
-                        l2_weight_decay=params.get('lstm').get('l2_weight_decay'),
-                        lstm_dim=params.get('lstm').get('lstm_dim'),
-                        dropout_val=params.get('lstm').get('dropout_val'),
-                        dense_dim=params.get('lstm').get('dense_dim'),
-                        add_sigmoid=True,
-                        train_embeds=params.get('lstm').get('train_embeds'),
-                        gpus=gpus)
-    concat = get_concat_model(embedding_matrix,
-                                  num_classes,
-                                  max_seq_len,
-                                  n_layers=params.get('concat').get('n_layers'),
-                                  concat=params.get('concat').get('concat'),
-                                  pool=params.get('concat').get('pool'),
-                                  num_filters=params.get('concat').get('num_filters'),
-                                  l2_weight_decay=params.get('concat').get('l2_weight_decay'),
-                                  lstm_dim=params.get('concat').get('lstm_dim'),
-                                  dropout_val=params.get('concat').get('dropout_val'),
-                                  dense_dim=params.get('concat').get('dense_dim'),
-                                  add_sigmoid=True,
-                                  train_embeds=params.get('concat').get('train_embeds'),
-                                  gpus=gpus)
+    dense_model = dense(embedding_matrix,
+                  num_classes,
+                  max_seq_len,
+                  dense_dim=params.get('dense').get('dense_dim'),
+                  n_layers=params.get('dense').get('n_layers'),
+                  concat=params.get('dense').get('concat'),
+                  dropout_val=params.get('dense').get('dropout_val'),
+                  l2_weight_decay=params.get('dense').get('l2_weight_decay'),
+                  pool=params.get('dense').get('pool'),
+                  train_embeds=params.get('dense').get('train_embeds'),
+                  mask_zero=params.get('dense').get('mask_zero'),
+                  add_sigmoid=True,
+                  gpus=gpus)
+    cnn_model = cnn(embedding_matrix,
+              num_classes,
+              max_seq_len,
+              num_filters=params.get('cnn').get('num_filters'),
+              l2_weight_decay=params.get('cnn').get('l2_weight_decay'),
+              dropout_val=params.get('cnn').get('dropout_val'),
+              dense_dim=params.get('cnn').get('dense_dim'),
+              train_embeds=params.get('cnn').get('train_embeds'),
+              n_cnn_layers=params.get('cnn').get('n_cnn_layers'),
+              pool=params.get('cnn').get('pool'),
+              add_embeds=params.get('cnn').get('add_embeds'),
+              add_sigmoid=True,
+              gpus=gpus)
+    lstm_model = rnn(embedding_matrix,
+                num_classes,
+                max_seq_len,
+                l2_weight_decay=params.get('lstm').get('l2_weight_decay'),
+                rnn_dim=params.get('lstm').get('rnn_dim'),
+                dropout_val=params.get('lstm').get('dropout_val'),
+                dense_dim=params.get('lstm').get('dense_dim'),
+                n_branches=params.get('lstm').get('n_branches'),
+                n_rnn_layers=params.get('lstm').get('n_rnn_layers'),
+                n_dense_layers=params.get('lstm').get('n_dense_layers'),
+                train_embeds=params.get('lstm').get('train_embeds'),
+                mask_zero=params.get('lstm').get('mask_zero'),
+                kernel_regularizer=params.get('lstm').get('kernel_regularizer'),
+                recurrent_regularizer=params.get('lstm').get('recurrent_regularizer'),
+                activity_regularizer=params.get('lstm').get('activity_regularizer'),
+                dropout=params.get('lstm').get('dropout'),
+                recurrent_dropout=params.get('lstm').get('recurrent_dropout'),
+                add_sigmoid=True,
+                gpus=gpus,
+                rnn_type='lstm')
+    gru_model = rnn(embedding_matrix,
+                 num_classes,
+                 max_seq_len,
+                 l2_weight_decay=params.get('gru').get('l2_weight_decay'),
+                 rnn_dim=params.get('gru').get('rnn_dim'),
+                 dropout_val=params.get('gru').get('dropout_val'),
+                 dense_dim=params.get('gru').get('dense_dim'),
+                 n_branches=params.get('gru').get('n_branches'),
+                 n_rnn_layers=params.get('gru').get('n_rnn_layers'),
+                 n_dense_layers=params.get('gru').get('n_dense_layers'),
+                 train_embeds=params.get('gru').get('train_embeds'),
+                 mask_zero=params.get('gru').get('mask_zero'),
+                 kernel_regularizer=params.get('gru').get('kernel_regularizer'),
+                 recurrent_regularizer=params.get('gru').get('recurrent_regularizer'),
+                 activity_regularizer=params.get('gru').get('activity_regularizer'),
+                 dropout=params.get('gru').get('dropout'),
+                 recurrent_dropout=params.get('gru').get('recurrent_dropout'),
+                 add_sigmoid=True,
+                 gpus=gpus,
+                 rnn_type='gru')
 
     models = []
     for model_label in params.get('models'):
         if model_label == 'cnn':
-            models.append([model_label, cnn])
+            models.append([model_label, cnn_model])
         elif model_label == 'dense':
-            models.append([model_label, dense])
+            models.append([model_label, dense_model])
         elif model_label == 'lstm':
-            models.append([model_label, lstm])
-        elif model_label == 'concat':
-            models.append([model_label, concat])
+            models.append([model_label, lstm_model])
+        elif model_label == 'gru':
+            models.append([model_label, gru_model])
         else:
             raise ValueError('Invalid model {}. Model hasn`t defined.'.format(model_label))
 
@@ -220,7 +246,7 @@ def main(*kargs, **kwargs):
         metrics = get_metrics(y_test_nn, y_nn[-1], target_labels)
         logger.debug('{} metrics:\n{}'.format(model_label, print_metrics(metrics)))
         logger.debug('Model path = {}'.format(model_file[model_label]))
-        model.save(model_file[model_label])
+        #model.save(model_file[model_label])
 
 
     # TFIDF + LogReg
@@ -239,7 +265,7 @@ def main(*kargs, **kwargs):
         test_df['tfidf_{}'.format(label)] = model.predict_proba(test_tfidf)[:,1]
         metrics_lr[label] = calc_metrics(y_test_nn[:, i], y_tfidf[-1])
         models_lr.append(model)
-        joblib.dump(model, model_file['lr'].format(label))
+        #joblib.dump(model, model_file['lr'].format(label))
     metrics_lr['Avg'] = {'Logloss': np.mean([metric['Logloss'] for label, metric in metrics_lr.items()])}
     logger.debug('LogReg(TFIDF) metrics:\n{}'.format(print_metrics(metrics_lr)))
 
@@ -293,7 +319,7 @@ def main(*kargs, **kwargs):
         y_hat_cb = model.predict_proba(x_val_cb)
         metrics_cb[label] = calc_metrics(y_val_cb[:, i], y_hat_cb[:, 1])
         models_cb.append(model)
-        joblib.dump(model, model_file['catboost'].format(label))
+        #joblib.dump(model, model_file['catboost'].format(label))
     metrics_cb['Avg'] = {'Logloss': np.mean([metric['Logloss'] for label,metric in metrics_cb.items()])}
     logger.debug('CatBoost metrics:\n{}'.format(print_metrics(metrics_cb)))
 
@@ -323,6 +349,7 @@ def main(*kargs, **kwargs):
     # ====Save results====
     logger.info('Saving results...')
     test_df[['id', 'toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].to_csv(result_fname, index=False, header=True)
+    test_df.to_csv('tmp_{}'.format(result_fname), index=False, header=True)
 
 
 if __name__=='__main__':

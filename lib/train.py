@@ -4,6 +4,11 @@ from math import pow, floor
 from keras import optimizers
 from keras.callbacks import EarlyStopping, LearningRateScheduler, Callback
 
+try:
+    import nirvana_dl
+except ImportError:
+    pass
+
 
 def step_decay(initial_lr, lr_drop_koef, epochs_to_drop, epoch):
     return initial_lr * pow(lr_drop_koef, floor((1 + epoch) / epochs_to_drop))
@@ -24,9 +29,12 @@ class LossHistory(Callback):
         self.lr.append(step_decay(self.initial_lr, self.lr_drop_koef, self.epochs_to_drop, len(self.losses)))
 
 
-def define_callbacks(early_stopping_delta, early_stopping_epochs, use_lr_strategy=True, initial_lr=0.005, lr_drop_koef=0.66, epochs_to_drop=5):
+def define_callbacks(early_stopping_delta, early_stopping_epochs, use_lr_strategy=True, initial_lr=0.005, lr_drop_koef=0.66, epochs_to_drop=5, model_checkpoint_dir=None):
     early_stopping = EarlyStopping(monitor='val_loss', min_delta=early_stopping_delta, patience=early_stopping_epochs, verbose=1)
     callbacks_list = [early_stopping]
+    if model_checkpoint_dir is not None:
+        model_checkpoint = ModelCheckpoint(os.path.join(model_checkpoint_dir,'weights.{epoch:02d}-{val_loss:.2f}.h5'), monitor='val_loss', save_best_only=True, verbose=0)
+        callbacks_list.append(model_checkpoint)
     if use_lr_strategy:
         epochs_to_drop = float(epochs_to_drop)
         loss_history = LossHistory(initial_lr, lr_drop_koef, epochs_to_drop)
@@ -90,6 +98,8 @@ class Params(object):
     def _load_from_file(self, fname):
         if fname is None:
             return {}
+        elif fname == 'nirvana':
+            return nirvana_dl.params()
         with open(fname) as f:
             return json.loads(f.read())
 
@@ -100,29 +110,52 @@ class Params(object):
                     'batch_size': 256,
                     'num_epochs': 10,
                     'learning_rate': 0.0001,
-                    'early_stopping_delta': 0.001,
-                    'early_stopping_epochs': 2,
                     'use_lr_strategy': True,
-                    'lr_drop_koef': 0.5,
+                    'lr_drop_koef': 0.9,
                     'epochs_to_drop': 1,
+                    'early_stopping_delta': 0.001,
+                    'early_stopping_epochs': 4,
                     'l2_weight_decay':0.0001,
                     'dropout_val': 0.5,
                     'dense_dim': 32,
+                    'mask_zero': True,
                     'train_embeds': False}
 
         params = {'models': [],
                   'dense': common_params,
                   'cnn': common_params,
                   'lstm': common_params,
-                  'concat': common_params}
+                  'gru': common_params}
+
+        params['dense']['dense_dim'] = 100
+        params['dense']['n_layers'] = 10
+        params['dense']['concat'] = 0
+        params['dense']['pool'] = 'max'
 
         params['cnn']['num_filters'] = 64
-        params['lstm']['lstm_dim'] = 50
-        params['concat']['num_filters'] = 64
-        params['concat']['lstm_dim'] = 50
-        params['concat']['n_layers'] = 10
-        params['concat']['concat'] = 0
-        params['concat']['pool'] = 'max'
+        params['cnn']['pool'] = 'max'
+        params['cnn']['n_cnn_layers'] = 1
+        params['cnn']['add_embeds'] = False
+
+        params['lstm']['rnn_dim'] = 100
+        params['lstm']['n_branches'] = 0
+        params['lstm']['n_rnn_layers'] = 1
+        params['lstm']['n_dense_layers'] = 1
+        params['lstm']['kernel_regularizer'] = None
+        params['lstm']['recurrent_regularizer'] = None
+        params['lstm']['activity_regularizer'] = None
+        params['lstm']['dropout'] = 0.0
+        params['lstm']['recurrent_dropout'] = 0.0
+
+        params['gru']['rnn_dim'] = 100
+        params['gru']['n_branches'] = 0
+        params['gru']['n_rnn_layers'] = 1
+        params['gru']['n_dense_layers'] = 1
+        params['gru']['kernel_regularizer'] = None
+        params['gru']['recurrent_regularizer'] = None
+        params['gru']['activity_regularizer'] = None
+        params['gru']['dropout'] = 0.0
+        params['gru']['recurrent_dropout'] = 0.0
 
         params['catboost'] = {
                     'add_bow': False,
