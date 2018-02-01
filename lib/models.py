@@ -54,15 +54,16 @@ def _get_regularizer(regularizer_name, weight):
 
 
 def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn_dim=100, dropout_val=0.3, dense_dim=32, n_branches=0, n_rnn_layers=1, n_dense_layers=1, add_sigmoid=True, train_embeds=False, gpus=0, rnn_type='lstm', mask_zero=True, kernel_regularizer=None, recurrent_regularizer=None, activity_regularizer=None, dropout=0.0, recurrent_dropout=0.0):
+    rnn_regularizers = {'kernel_regularizer': _get_regularizer(kernel_regularizer, l2_weight_decay),
+                        'recurrent_regularizer': _get_regularizer(recurrent_regularizer, l2_weight_decay),
+                        'activity_regularizer': _get_regularizer(activity_regularizer, l2_weight_decay)}
+	if gpus == 0:
+		rnn_regularizers['dropout'] = dropout
+		rnn_regularizers['recurrent_dropout'] = recurrent_dropout
     if rnn_type == 'lstm':
         RNN = CuDNNLSTM if gpus > 0 else LSTM
     elif rnn_type == 'gru':
         RNN = CuDNNGRU if gpus > 0 else GRU
-    rnn_regularizers = {'kernel_regularizer': _get_regularizer(kernel_regularizer, l2_weight_decay),
-                        'recurrent_regularizer': _get_regularizer(recurrent_regularizer, l2_weight_decay),
-                        'activity_regularizer': _get_regularizer(activity_regularizer, l2_weight_decay),
-                        'dropout': dropout,
-                        'recurrent_dropout': recurrent_dropout}
     input_ = Input(shape=(max_seq_len,))
     embeds = Embedding(embedding_matrix.shape[0],
                        embedding_matrix.shape[1],
