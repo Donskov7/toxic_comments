@@ -1,6 +1,6 @@
 # Toxic Comment Classification Challenge
 
-[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/keras-team/keras/blob/master/LICENSE)
+[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/Donskov7/toxic_comments/blob/master/LICENSE)
 
 [Kaggle competition](https://www.kaggle.com/c/jigsaw-toxic-comment-classification-challenge) to identify and classify toxic online comments
 
