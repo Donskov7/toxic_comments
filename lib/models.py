@@ -1,11 +1,12 @@
+from __future__ import absolute_import
 from keras import regularizers
 from keras.utils import multi_gpu_model
 from keras.models import Sequential, Model
-from keras.layers import Input, Dropout, Concatenate, Embedding, Lambda
+from keras.layers import Input, Dropout, Concatenate, Embedding
 from keras.layers import Dense, Bidirectional, LSTM, GRU, CuDNNLSTM, CuDNNGRU
 from keras.layers import Conv1D, MaxPooling1D, AveragePooling1D, GlobalMaxPooling1D, GlobalAveragePooling1D
 
-from utils import ZeroMaskedEntries, mask_aware_mean
+from .utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
 
 
 def cnn(embedding_matrix, num_classes, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0, n_cnn_layers=1, pool='max', add_embeds=False):
@@ -57,13 +58,15 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
     rnn_regularizers = {'kernel_regularizer': _get_regularizer(kernel_regularizer, l2_weight_decay),
                         'recurrent_regularizer': _get_regularizer(recurrent_regularizer, l2_weight_decay),
                         'activity_regularizer': _get_regularizer(activity_regularizer, l2_weight_decay)}
-	if gpus == 0:
-		rnn_regularizers['dropout'] = dropout
-		rnn_regularizers['recurrent_dropout'] = recurrent_dropout
+    if gpus == 0:
+        rnn_regularizers['dropout'] = dropout
+        rnn_regularizers['recurrent_dropout'] = recurrent_dropout
     if rnn_type == 'lstm':
         RNN = CuDNNLSTM if gpus > 0 else LSTM
     elif rnn_type == 'gru':
         RNN = CuDNNGRU if gpus > 0 else GRU
+    mask_zero = mask_zero and gpus == 0
+
     input_ = Input(shape=(max_seq_len,))
     embeds = Embedding(embedding_matrix.shape[0],
                        embedding_matrix.shape[1],
@@ -78,6 +81,8 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
         branches.append(branch)
     if n_branches > 1:
         x = Concatenate()(branches)
+    elif n_branches == 1:
+        x = branches[0]
     else:
         x = embeds
     for _ in range(n_rnn_layers):
@@ -95,16 +100,27 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
     return model
 
 
-def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10, concat=0, dropout_val=0.5, l2_weight_decay=0.0001, pool='max', add_sigmoid=True, train_embeds=False, gpus=0, mask_zero=True):
+def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10, concat=0, dropout_val=0.5, l2_weight_decay=0.0001, pool='max', add_sigmoid=True, train_embeds=False, gpus=0):
+    GlobalPool = {
+        'avg': GlobalZeroMaskedAveragePooling1D,
+        'max': GlobalMaxPooling1D,
+        'sum': GlobalSumPooling1D
+    }
+
     input_ = Input(shape=(max_seq_len,))
     embeds = Embedding(embedding_matrix.shape[0],
                        embedding_matrix.shape[1],
                        weights=[embedding_matrix],
                        input_length=max_seq_len,
-                       mask_zero=mask_zero,
                        trainable=train_embeds)(input_)
-    embed_zeroed = ZeroMaskedEntries()(embeds)
-    x = Lambda(mask_aware_mean)(embed_zeroed)
+
+    if isinstance(pool, list) and len(pool) > 1:
+        to_concat = []
+        for p in pool:
+            to_concat.append(GlobalPool[p]()(embeds))
+        x = Concatenate()(to_concat)
+    else:
+        x = GlobalPool[pool]()(embeds)
     prev = []
     for i in range(n_layers):
         if concat > 0:
@@ -123,6 +139,7 @@ def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10
     if gpus > 0:
         model = multi_gpu_model(model, gpus=gpus)
     return model
+
 
 
 def save_predictions(df, predictions, target_labels, additional_name=None):

@@ -16,6 +16,11 @@ try:
 except ImportError:
     import pickle
 
+try:
+    import nirvana_dl
+except ImportError:
+    pass
+
 
 def load_data(fname, **kwargs):
     func = kwargs.get('func', None)
@@ -25,6 +30,99 @@ def load_data(fname, **kwargs):
     if func is not None:
         return func(df.values)
     return df
+
+
+class Params(object):
+    def __init__(self, config=None):
+        self._params = self._common_init()
+        config_params = self._load_from_file(config)
+        self._update_params(config_params)
+
+    def _load_from_file(self, fname):
+        if fname is None:
+            return {}
+        elif fname == 'nirvana':
+            return nirvana_dl.params()
+        elif isinstance(fname, dict):
+            return fname
+        with open(fname) as f:
+            return json.loads(f.read())
+
+    def _common_init(self):
+        common_params = {
+                    'warm_start': False,
+                    'model_file': None,
+                    'batch_size': 256,
+                    'num_epochs': 10,
+                    'learning_rate': 0.0001,
+                    'use_lr_strategy': True,
+                    'lr_drop_koef': 0.9,
+                    'epochs_to_drop': 1,
+                    'early_stopping_delta': 0.001,
+                    'early_stopping_epochs': 4,
+                    'l2_weight_decay':0.0001,
+                    'dropout_val': 0.5,
+                    'dense_dim': 32,
+                    'mask_zero': True,
+                    'train_embeds': False}
+
+		params = {'models': [],
+                  'dense': common_params,
+                  'cnn': common_params,
+                  'lstm': common_params,
+                  'gru': common_params}
+
+        params['dense']['dense_dim'] = 100
+        params['dense']['n_layers'] = 10
+        params['dense']['concat'] = 0
+        params['dense']['pool'] = 'max'
+
+        params['cnn']['num_filters'] = 64
+        params['cnn']['pool'] = 'max'
+        params['cnn']['n_cnn_layers'] = 1
+        params['cnn']['add_embeds'] = False
+
+        params['lstm']['rnn_dim'] = 100
+        params['lstm']['n_branches'] = 0
+        params['lstm']['n_rnn_layers'] = 1
+        params['lstm']['n_dense_layers'] = 1
+        params['lstm']['kernel_regularizer'] = None
+        params['lstm']['recurrent_regularizer'] = None
+        params['lstm']['activity_regularizer'] = None
+        params['lstm']['dropout'] = 0.0
+        params['lstm']['recurrent_dropout'] = 0.0
+
+        params['gru']['rnn_dim'] = 100
+        params['gru']['n_branches'] = 0
+        params['gru']['n_rnn_layers'] = 1
+        params['gru']['n_dense_layers'] = 1
+        params['gru']['kernel_regularizer'] = None
+        params['gru']['recurrent_regularizer'] = None
+        params['gru']['activity_regularizer'] = None
+        params['gru']['dropout'] = 0.0
+        params['gru']['recurrent_dropout'] = 0.0
+
+		params['catboost'] = {
+                    'add_bow': False,
+                    'bow_top': 100,
+                    'iterations': 1000,
+                    'depth': 6,
+                    'rsm': 1,
+                    'learning_rate': 0.01,
+                    'device_config': None}
+        return params
+
+    def _update_params(self, params):
+        if params is not None and params:
+            for key in params.keys():
+                if isinstance(params[key], dict):
+                    self._params.setdefault(key, {})
+                    self._params[key].update(params[key])
+                else:
+                    self._params[key] = params[key]
+
+    def get(self, key):
+        return self._params.get(key, None)
 
 
 class Embeds(object):
@@ -108,50 +206,66 @@ class Logger(object):
     def debug(self, message):
         self.rootLogger.debug(message)
 
-class ZeroMaskedEntries(Layer):
-    """
-    This layer is called after an Embedding layer.
-    It zeros out all of the masked-out embeddings.
-    It also swallows the mask without passing it on.
-    You can change this to default pass-on behavior as follows:
 
-    def compute_mask(self, x, mask=None):
-        if not self.mask_zero:
-            return None
-        else:
-            return K.not_equal(x, 0)
-    """
-
+class GlobalZeroMaskedAveragePooling1D(Layer):
     def __init__(self, **kwargs):
-        self.support_mask = True
-        super(ZeroMaskedEntries, self).__init__(**kwargs)
+        super(GlobalZeroMaskedAveragePooling1D, self).__init__(**kwargs)
 
     def build(self, input_shape):
         self.output_dim = input_shape[1]
         self.repeat_dim = input_shape[2]
 
-    def call(self, x, mask=None):
-        mask = K.cast(mask, 'float32')
-        mask = K.repeat(mask, self.repeat_dim)
-        mask = K.permute_dimensions(mask, (0, 2, 1))
-        return x * mask
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
 
-    def compute_mask(self, input_shape, input_mask=None):
+    def call(self, x, mask=None):
+        mask = K.not_equal(K.sum(K.abs(x), axis=2, keepdims=True), 0)
+        n = K.sum(K.cast(mask, 'float32'), axis=1, keepdims=False)
+        x_mean = K.sum(x, axis=1, keepdims=False) / (n + 1)
+        return K.cast(x_mean, 'float32')
+
+    def compute_mask(self, x, mask=None):
         return None
 
-def mask_aware_mean(x):
-    # recreate the masks - all zero rows have been masked
-    mask = K.not_equal(K.sum(K.abs(x), axis=2, keepdims=True), 0)
 
-    # number of that rows are not all zeros
-    n = K.sum(K.cast(mask, 'float32'), axis=1, keepdims=False)
+class GlobalSumPooling1D(Layer):
+    def __init__(self, **kwargs):
+        super(GlobalSumPooling1D, self).__init__(**kwargs)
 
-    # compute mask-aware mean of x
-    x_mean = K.sum(x, axis=1, keepdims=False) / n
+    def build(self, input_shape):
+        self.output_dim = input_shape[1]
+        self.repeat_dim = input_shape[2]
 
-    return x_mean
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
 
-def mask_aware_mean_output_shape(input_shape):
-    shape = list(input_shape)
-    assert len(shape) == 3
-    return (shape[0], shape[2])
+    def call(self, x, mask=None):
+        return K.sum(x, axis=1, keepdims=False)
+
+    def compute_mask(self, x, mask=None):
+        return None
+
+
+def embed_aggregate(seq, embeds, func=np.sum, normalize=False):
+    embed_dim = len(embeds[0])
+    embed = np.zeros(embed_dim)
+    nozeros = 0
+    for value in seq:
+        if value == 0:
+            continue
+        embed = func([embed, embeds[value]], axis=0)
+        nozeros += 1
+    if normalize:
+        embed /= nozeros + 1
+    return embed
+
+
+def similarity(seq1, seq2, embeds, pool='max', func=lambda x1, x2: x1 + x2):
+    pooling = {
+        'max': {'func': np.max},
+        'avg': {'func': np.sum, 'normalize': True},
+        'sum': {'func': np.sum, 'normalize': False}
+    }
+    embed1 = embed_aggregate(seq1, embeds, **pooling[pool])
+    embed2 = embed_aggregate(seq2, embeds, **pooling[pool])
+    return func(embed1, embed2)

@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 import re
 import os.path
 import argparse
@@ -16,12 +17,12 @@ from tensorflow.python.client import device_lib
 from nltk.tokenize import RegexpTokenizer
 from tqdm import tqdm
 
-from utils import load_data, Embeds, Logger
-from features import calc_text_uniq_words, get_bow, get_tfidf, get_most_informative_features
-from preprocessing import clean_text, convert_text2seq, get_embedding_matrix, split_data
-from models import cnn, dense, rnn, save_predictions
-from train import train, continue_train, Params
-from metrics import calc_metrics, get_metrics, print_metrics
+from .utils import load_data, Embeds, Logger, Params
+from .features import calc_text_uniq_words, get_bow, get_tfidf, get_most_informative_features
+from .preprocessing import clean_text, convert_text2seq, get_embedding_matrix, split_data
+from .models import cnn, dense, rnn, save_predictions
+from .train import train, continue_train
+from .metrics import calc_metrics, get_metrics, print_metrics
 
 
 def get_kwargs(kwargs):
@@ -349,7 +350,7 @@ def main(*kargs, **kwargs):
     # ====Save results====
     logger.info('Saving results...')
     test_df[['id', 'toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].to_csv(result_fname, index=False, header=True)
-    test_df.to_csv('tmp_{}'.format(result_fname), index=False, header=True)
+    test_df.to_csv('{}_tmp'.format(result_fname), index=False, header=True)
 
 
 if __name__=='__main__':

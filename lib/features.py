@@ -47,3 +47,28 @@ def get_bow(texts, words):
             except UnicodeDecodeError:
                 pass
     return result
+
+
+def embed_aggregate(seq, embeds, func=np.sum, normalize=False):
+	embed_dim = len(embeds[0])
+    embed = np.zeros(embed_dim)
+	nozeros = 0
+    for value in seq:
+        if value == 0:
+            continue
+        embed = func([embed, embeds[value]], axis=0)
+		nozeros += 1
+	if normalize:
+		embed /= nozeros + 1
+    return embed
+
+
+def similarity(seq1, seq2, embeds, pool='max', func=lambda x1, x2: x1 + x2):
+    pooling = {
+        'max': {'func': np.max},
+        'avg': {'func': np.sum, 'normalize': True},
+        'sum': {'func': np.sum, 'normalize': False}
+    }
+    embed1 = embed_aggregate(seq1, embeds, **pooling[pool])
+    embed2 = embed_aggregate(seq2, embeds, **pooling[pool])
+    return func(embed1, embed2)
