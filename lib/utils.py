@@ -1,4 +1,4 @@
-import re
+import os
 import sys
 import json
 import logging
@@ -34,9 +34,10 @@ def load_data(fname, **kwargs):
 
 class Params(object):
     def __init__(self, config=None):
-        self._params = self._common_init()
-        config_params = self._load_from_file(config)
-        self._update_params(config_params)
+        self._params = self._load_from_file(config)
+
+    def __getitem__(self, key):
+        return self._params.get(key, None)
 
     def _load_from_file(self, fname):
         if fname is None:
@@ -48,99 +49,22 @@ class Params(object):
         with open(fname) as f:
             return json.loads(f.read())
 
-    def _common_init(self):
-        common_params = {
-                    'warm_start': False,
-                    'model_file': None,
-                    'batch_size': 256,
-                    'num_epochs': 10,
-                    'learning_rate': 0.0001,
-                    'use_lr_strategy': True,
-                    'lr_drop_koef': 0.9,
-                    'epochs_to_drop': 1,
-                    'early_stopping_delta': 0.001,
-                    'early_stopping_epochs': 4,
-                    'l2_weight_decay':0.0001,
-                    'dropout_val': 0.5,
-                    'dense_dim': 32,
-                    'mask_zero': True,
-                    'train_embeds': False}
-
-		params = {'models': [],
-                  'dense': common_params,
-                  'cnn': common_params,
-                  'lstm': common_params,
-                  'gru': common_params}
-
-        params['dense']['dense_dim'] = 100
-        params['dense']['n_layers'] = 10
-        params['dense']['concat'] = 0
-        params['dense']['pool'] = 'max'
-
-        params['cnn']['num_filters'] = 64
-        params['cnn']['pool'] = 'max'
-        params['cnn']['n_cnn_layers'] = 1
-        params['cnn']['add_embeds'] = False
-
-        params['lstm']['rnn_dim'] = 100
-        params['lstm']['n_branches'] = 0
-        params['lstm']['n_rnn_layers'] = 1
-        params['lstm']['n_dense_layers'] = 1
-        params['lstm']['kernel_regularizer'] = None
-        params['lstm']['recurrent_regularizer'] = None
-        params['lstm']['activity_regularizer'] = None
-        params['lstm']['dropout'] = 0.0
-        params['lstm']['recurrent_dropout'] = 0.0
-
-        params['gru']['rnn_dim'] = 100
-        params['gru']['n_branches'] = 0
-        params['gru']['n_rnn_layers'] = 1
-        params['gru']['n_dense_layers'] = 1
-        params['gru']['kernel_regularizer'] = None
-        params['gru']['recurrent_regularizer'] = None
-        params['gru']['activity_regularizer'] = None
-        params['gru']['dropout'] = 0.0
-        params['gru']['recurrent_dropout'] = 0.0
-
-		params['catboost'] = {
-                    'add_bow': False,
-                    'bow_top': 100,
-                    'iterations': 1000,
-                    'depth': 6,
-                    'rsm': 1,
-                    'learning_rate': 0.01,
-                    'device_config': None}
-        return params
-
-    def _update_params(self, params):
-        if params is not None and params:
-            for key in params.keys():
-                if isinstance(params[key], dict):
-                    self._params.setdefault(key, {})
-                    self._params[key].update(params[key])
-                else:
-                    self._params[key] = params[key]
-
     def get(self, key):
         return self._params.get(key, None)
 
 
 class Embeds(object):
-    def __init__(self, fname, w2v_type='fasttext', format='file'):
-        if format in ('json', 'pickle'):
-            self.load(fname, format)
-        elif w2v_type == 'fasttext':
-            self.model = self._read_fasttext(fname)
-        elif w2v_type == 'word2vec':
-            self.model = gensim.models.KeyedVectors.load_word2vec_format(fname, binary=format=='binary')
-        else:
-            self.model = {}
+    def __init__(self):
+        self.word_index = {}
+        self.word_index_reverse = {}
+        self.matrix = None
+        self.shape = (0, 0)
 
     def __getitem__(self, key):
-        try:
-            return self.model[key]
-        except KeyError:
-            return None
+        idx = self.word_index.get(key, None)
+        if idx is not None:
+            return self.matrix[idx]
+        return None
 
     def __contains__(self, key):
         return self[key] is not None
@@ -151,35 +75,82 @@ class Embeds(object):
         vec = line[1:]
         return word, [float(val) for val in vec]
 
-    def _read_fasttext(self, fname):
+    def _read_raw_file(self, fname):
         with open(fname) as f:
             tech_line = f.readline()
-            dict_size, vec_size = self._process_line(tech_line)
-            print('dict_size = {}'.format(dict_size))
-            print('vec_size = {}'.format(vec_size))
-            model = {}
-            for line in tqdm(f, file=sys.stdout):
+            word_count, embed_dim = self._process_line(tech_line)
+            word_count = int(word_count) + 1
+            embed_dim = int(embed_dim[0])
+            print('dict_size = {}'.format(word_count))
+            print('embed_dim = {}'.format(embed_dim))
+            self.matrix = np.zeros((word_count, embed_dim))
+            self.word_index = {}
+            self.word_index_reverse = {}
+            for i, line in tqdm(enumerate(f), file=sys.stdout):
                 word, vec = self._process_line(line)
-                model[word] = vec
-        return model
-
-    def save(self, fname, format='json'):
-        if format == 'json':
-            with open(fname, 'w') as f:
-                json.dump(self.model, f)
-        elif format == 'pickle':
-            with open(fname, 'wb') as f:
-                pickle.dump(self.model, f)
+                self.matrix[i+1] = vec
+                self.word_index[word] = i+1
+                self.word_index_reverse[i+1] = word
+            self.shape = (word_count, embed_dim)
         return self
 
-    def load(self, fname, format='json'):
+    def _read_struct_file(self, fname, format):
         if format == 'json':
-            with open(fname) as f:
-                self.model = json.load(f)
+            data = json.load(open(fname))
         elif format == 'pickle':
-            with open(fname, 'rb') as f:
-                self.model = pickle.load(f)
+            data = pickle.load(open(fname, 'rb'))
+        elif format in ('word2vec', 'binary'):
+            data = gensim.models.KeyedVectors.load_word2vec_format(fname, binary=format=='binary')
+        word_count = len(data) + 1
+        embed_dim = len(data.values()[0])
+        self.word_index = {}
+        self.word_index_reverse = {}
+        self.matrix = np.zeros((word_count, embed_dim))
+        for i, (word, vec) in enumerate(data.items()):
+            self.matrix[i+1] = vec
+            self.word_index[word] = i+1
+            self.word_index_reverse[i+1] = word
         return self
+
+    def save(self, fname):
+        if os.path.exists(fname):
+            os.remove(fname)
+        with open(fname, 'a') as f:
+            f.write('{} {}\n'.format(*self.shape))
+            for i,line in enumerate(self.matrix[1:]):
+                line = [str(val) for val in line]
+                line = ' '.join(line)
+                f.write('{} {}\n'.format(self.word_index_reverse[i+1], line))
+        return self
+
+    def load(self, fname, format='raw'):
+        if format == 'raw':
+            self._read_raw_file(fname)
+        else:
+            self._read_struct_file(fname, format)
+        return self
+
+    def set_matrix(self, max_words, word_index):
+        words_not_found = []
+        word_count = min(max_words, len(word_index)) + 1
+        matrix = np.zeros((word_count, self.shape[1]))
+        word_index_reverse = {idx : word for word, idx in word_index.items()}
+        for word, i in word_index.items():
+            if i >= word_count:
+                break
+            vec = self[word]
+            if vec is not None and len(vec) > 0:
+                matrix[i] = vec
+            else:
+                words_not_found.append(word)
+        self.matrix = matrix
+        self.word_index = word_index
+        self.word_index_reverse = word_index_reverse
+        self.shape = (word_count, self.shape[1])
+        return words_not_found
+
+    def get_matrix(self):
+        return self.matrix
 
 
 class Logger(object):
@@ -247,13 +218,12 @@ class GlobalSumPooling1D(Layer):
 
 
 def embed_aggregate(seq, embeds, func=np.sum, normalize=False):
-    embed_dim = len(embeds[0])
-    embed = np.zeros(embed_dim)
+    embed = np.zeros(embeds.shape[1])
     nozeros = 0
     for value in seq:
-        if value == 0:
+        if value == 0 or value > embeds.shape[0]:
             continue
-        embed = func([embed, embeds[value]], axis=0)
+        embed = func([embed, embeds.matrix[value]], axis=0)
         nozeros += 1
     if normalize:
         embed /= nozeros + 1

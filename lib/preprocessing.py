@@ -3,6 +3,8 @@ import random
 import numpy as np
 from tqdm import tqdm
 
+from nltk.tokenize import RegexpTokenizer
+
 from keras.preprocessing import sequence
 from keras.preprocessing.text import Tokenizer
 
@@ -26,8 +28,10 @@ def split_text_and_digits(text, regexps):
     return text
 
 
-def clean_text(df, tokinizer, wrong_words_dict, regexps, autocorrect=True):
+def clean_text(df, wrong_words_dict, autocorrect=True):
     df.fillna("__NA__", inplace=True)
+    tokinizer = RegexpTokenizer(r'\w+')
+    regexps = [re.compile("([a-zA-Z]+)([0-9]+)"), re.compile("([0-9]+)([a-zA-Z]+)")]
     texts = df.tolist()
     result = []
     for text in tqdm(texts):
@@ -66,21 +70,6 @@ def convert_text2seq(train_texts, test_texts, max_words, max_seq_len, embeds, lo
     return word_seq_train, word_seq_test, word_index
 
 
-def get_embedding_matrix(embed_dim, embeds, max_words, word_index):
-    words_not_found = []
-    nb_words = min(max_words, len(word_index))
-    embedding_matrix = np.zeros((nb_words, embed_dim))
-    for word, i in word_index.items():
-        if i >= nb_words:
-            continue
-        embedding_vector = embeds[word]
-        if embedding_vector is not None and len(embedding_vector) > 0:
-            embedding_matrix[i] = embedding_vector
-        else:
-            words_not_found.append(word)
-    return embedding_matrix, words_not_found
-
-
 def split_data_idx(n, test_size=0.2, shuffle=True, random_state=0):
     train_size = 1 - test_size
     idxs = np.arange(n)
@@ -93,4 +82,11 @@ def split_data_idx(n, test_size=0.2, shuffle=True, random_state=0):
 def split_data(x, y, test_size=0.2, shuffle=True, random_state=0):
     n = len(x)
     train_idxs, test_idxs = split_data_idx(n, test_size, shuffle, random_state)
-    return np.array(x[train_idxs]), np.array(x[test_idxs]), y[train_idxs], y[test_idxs], train_idxs, test_idxs
+    return x[train_idxs], x[test_idxs], y[train_idxs], y[test_idxs], train_idxs, test_idxs
+
+
+def parse_seq(text, type):
+    text = re.sub('[^0-9. ]','', text)
+    text = re.sub(' +',' ', text)
+    text = text.strip().split()
+    return np.array([type(val) for val in text])

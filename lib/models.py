@@ -1,4 +1,11 @@
 from __future__ import absolute_import
+import numpy as np
+from scipy import sparse
+
+from catboost import CatBoostClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 from keras import regularizers
 from keras.utils import multi_gpu_model
 from keras.models import Sequential, Model
@@ -6,7 +13,10 @@ from keras.layers import Input, Dropout, Concatenate, Embedding
 from keras.layers import Dense, Bidirectional, LSTM, GRU, CuDNNLSTM, CuDNNGRU
 from keras.layers import Conv1D, MaxPooling1D, AveragePooling1D, GlobalMaxPooling1D, GlobalAveragePooling1D
 
-from .utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
+try:
+    from .utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
+except ImportError:
+    from utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
 
 
 def cnn(embedding_matrix, num_classes, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0, n_cnn_layers=1, pool='max', add_embeds=False):
@@ -140,6 +150,78 @@ def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10
         model = multi_gpu_model(model, gpus=gpus)
     return model
 
+
+class TFIDF(object):
+    def __init__(self, target_labels, *args, **kwargs):
+        self.target_labels = target_labels
+        self.n_classes = len(target_labels)
+        params = {
+            'C': 4.0,
+            'solver': 'sag',
+            'max_iter': 1000,
+            'n_jobs': 16
+        }
+        params.update(kwargs)
+        self.models = [LogisticRegression(*args, **params) for _ in range(self.n_classes)]
+        self.word_tfidf = None
+        self.char_tfidf = None
+
+    def fit(self, X, y, max_features=50000):
+        assert np.shape(y)[1] == self.n_classes
+        x_tfidf = self.fit_tfidf(X, max_features)
+        for i, model in enumerate(self.models):
+            model.fit(x_tfidf, y[:, i])
+
+    def predict(self, X):
+        y = []
+        x_tfidf = self.transform_tfidf(X)
+        for i, model in enumerate(self.models):
+            y.append(model.predict(x_tfidf))
+        return np.array(y)
+
+    def fit_tfidf(self, X, max_features):
+        self.word_tfidf = TfidfVectorizer(max_features=max_features, analyzer='word', lowercase=True, ngram_range=(1, 3), token_pattern='[a-zA-Z0-9]')
+        self.char_tfidf = TfidfVectorizer(max_features=max_features, analyzer='char', lowercase=True, ngram_range=(1, 5), token_pattern='[a-zA-Z0-9]')
+
+        tfidf_word = self.word_tfidf.fit_transform(X)
+        tfidf_char = self.char_tfidf.fit_transform(X)
+
+        return sparse.hstack([tfidf_word, tfidf_char])
+
+    def transform_tfidf(self, X):
+        assert self.word_tfidf != None and self.char_tfidf != None
+        tfidf_word = self.word_tfidf.transform(X)
+        tfidf_char = self.char_tfidf.transform(X)
+
+        return sparse.hstack([tfidf_word, tfidf_char])
+
+
+class CatBoost(object):
+    def __init__(self, target_labels, *args, **kwargs):
+        self.target_labels = target_labels
+        self.n_classes = len(target_labels)
+        self.models = [CatBoostClassifier(*args, **kwargs) for _ in range(self.n_classes)]
+
+    def fit(self, X, y, eval_set=None, use_best_model=True):
+        assert np.shape(y)[1] == self.n_classes
+        for i, model in enumerate(self.models):
+            if eval_set is not None:
+                eval_set_i = (eval_set[0], eval_set[1][:, i])
+            else:
+                eval_set_i = None
+            model.fit(X, y[:, i], eval_set=eval_set_i, use_best_model=use_best_model)
+
+    def predict(self, X):
+        y = []
+        for i, model in enumerate(self.models):
+            y.append(model.predict(X))
+        return np.array(y)
+
+    def predict_proba(self, X):
+        y = []
+        for i, model in enumerate(self.models):
+            y.append(model.predict_proba(X)[:, 1])
+        return np.array(y)
 
 
 def save_predictions(df, predictions, target_labels, additional_name=None):
