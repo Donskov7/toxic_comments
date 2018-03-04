@@ -69,16 +69,16 @@ class Embeds(object):
     def __contains__(self, key):
         return self[key] is not None
 
-    def _process_line(self, line):
+    def _process_line(self, line, embed_dim):
         line = line.rstrip().split(' ')
-        word = line[0]
-        vec = line[1:]
+        word = ' '.join(line[:-embed_dim])
+        vec = line[-embed_dim:]
         return word, [float(val) for val in vec]
 
     def _read_raw_file(self, fname):
         with open(fname) as f:
             tech_line = f.readline()
-            word_count, embed_dim = self._process_line(tech_line)
+            word_count, embed_dim = tech_line.rstrip().split()
             word_count = int(word_count) + 1
             embed_dim = int(embed_dim[0])
             print('dict_size = {}'.format(word_count))
@@ -87,7 +87,7 @@ class Embeds(object):
             self.word_index = {}
             self.word_index_reverse = {}
             for i, line in tqdm(enumerate(f), file=sys.stdout):
-                word, vec = self._process_line(line)
+                word, vec = self._process_line(line, embed_dim)
                 self.matrix[i+1] = vec
                 self.word_index[word] = i+1
                 self.word_index_reverse[i+1] = word

@@ -4,6 +4,7 @@ import numpy as np
 from tqdm import tqdm
 
 from nltk.tokenize import RegexpTokenizer
+from sklearn.feature_extraction.text import CountVectorizer
 
 from keras.preprocessing import sequence
 from keras.preprocessing.text import Tokenizer
@@ -54,20 +55,59 @@ def delete_unknown_words(text, embeds):
     return ' '.join([word for word in text.split() if word in embeds])
 
 
-def convert_text2seq(train_texts, test_texts, max_words, max_seq_len, embeds, lower=True, char_level=False, uniq=False, use_only_exists_words=False):
-    tokenizer = Tokenizer(num_words=max_words, lower=lower, char_level=char_level)
+def sparse_to_seq(matrix, maxlen):
+    seqs = []
+    for i in range(np.shape(matrix)[0]):
+        seq = []
+        for (_, j), cnt in matrix[i].todok().items():
+            for _ in range(cnt):
+                seq.append(j+1)
+        if len(seq) < maxlen:
+            for _ in range(maxlen-len(seq)):
+                seq.append(0)
+        if len(seq) > maxlen:
+            random.shuffle(seq)
+            seq = seq[:maxlen]
+        seqs.append(seq)
+    return seqs
+
+
+def convert_text2seq(train_texts, test_texts,
+                     max_words, max_seq_len, max_char_seq_len, embeds,
+                     lower=True, oov_token='__NA__',
+                     uniq=False, use_only_exists_words=False):
     texts = train_texts + test_texts
     if uniq:
         texts = [uniq_words_in_text(text) for text in texts]
     if use_only_exists_words:
         texts = [delete_unknown_words(text, embeds) for text in texts]
-    tokenizer.fit_on_texts(texts)
-    word_seq_train = tokenizer.texts_to_sequences(train_texts)
-    word_seq_test = tokenizer.texts_to_sequences(test_texts)
-    word_index = tokenizer.word_index
+
+    # WORD TOKENIZER
+    word_tokenizer = Tokenizer(num_words=max_words, lower=lower, char_level=False)
+    word_tokenizer.fit_on_texts(texts)
+
+    word_seq_train = word_tokenizer.texts_to_sequences(train_texts)
+    word_seq_test = word_tokenizer.texts_to_sequences(test_texts)
+    word_index = word_tokenizer.word_index
+
     word_seq_train = list(sequence.pad_sequences(word_seq_train, maxlen=max_seq_len))
     word_seq_test = list(sequence.pad_sequences(word_seq_test, maxlen=max_seq_len))
-    return word_seq_train, word_seq_test, word_index
+
+    # CHAR TOKENIZER
+    char_tokenizer = CountVectorizer(analyzer='char', ngram_range=(3,3), stop_words=None, lowercase=True,
+                            max_df=0.9, min_df=0, max_features=max_words)
+    char_tokenizer.fit(texts)
+    char_sparse_train = char_tokenizer.transform(train_texts)
+    char_sparse_test = char_tokenizer.transform(test_texts)
+
+    char_seq_train = sparse_to_seq(char_sparse_train, maxlen=max_char_seq_len)
+    char_seq_test = sparse_to_seq(char_sparse_test, maxlen=max_char_seq_len)
+
+    char_index = {key: val+1 for key, val in char_tokenizer.vocabulary_.items()}
+    char_index[oov_token] = 0
+    char_vocab_len = len(char_index)
+
+    return word_seq_train, word_seq_test, word_index, char_seq_train, char_seq_test, char_index
 
 
 def split_data_idx(n, test_size=0.2, shuffle=True, random_state=0):

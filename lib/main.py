@@ -2,6 +2,7 @@ from __future__ import absolute_import
 import os.path
 import argparse
 import logging
+import json
 from six import iteritems
 import numpy as np
 
@@ -24,7 +25,8 @@ def get_kwargs(kwargs):
     parser.add_argument('-f', '--train', dest='train', action='store', help='/path/to/trian_file', type=str)
     parser.add_argument('-t', '--test', dest='test', action='store', help='/path/to/test_file', type=str)
     parser.add_argument('-o', '--output', dest='output', action='store', help='/path/to/output_file', type=str)
-    parser.add_argument('-e', '--embeds', dest='embeds', action='store', help='/path/to/embeds_file', type=str)
+    parser.add_argument('-we', '--word_embeds', dest='word_embeds', action='store', help='/path/to/embeds_file', type=str)
+    parser.add_argument('-ce', '--char_embeds', dest='char_embeds', action='store', help='/path/to/embeds_file', type=str)
     parser.add_argument('-c','--config', dest='config', action='store', help='/path/to/config.json', type=str)
     parser.add_argument('-l', '--logger', dest='logger', action='store', help='/path/to/log_file', type=str, default=None)
     parser.add_argument('--mode', dest='mode', action='store', help='preprocess / train / validate / all', type=str, default='all')
@@ -46,7 +48,8 @@ def main(*kargs, **kwargs):
     train_fname = kwargs['train']
     test_fname = kwargs['test']
     result_fname = kwargs['output']
-    embeds_fname = kwargs['embeds']
+    word_embeds_fname = kwargs['word_embeds']
+    char_embeds_fname = kwargs['char_embeds']
     logger_fname = kwargs['logger']
     mode = kwargs['mode']
     max_words = kwargs['max_words']
@@ -60,7 +63,8 @@ def main(*kargs, **kwargs):
     norm_prob_koef = kwargs['norm_prob_koef']
     gpus = kwargs['gpus']
 
-    seq_col_name = 'comment_seq_use_exist{}_{}k'.format(int(use_only_exists_words), int(max_words/1000))
+    seq_col_name_words = 'comment_seq_lw_use_exist{}_{}k'.format(int(use_only_exists_words), int(max_words/1000))
+    seq_col_name_ll3 = 'comment_seq_ll3_use_exist{}_{}k'.format(int(use_only_exists_words), int(max_words/1000))
 
     model_file = {
         'dense': os.path.join(output_dir, 'dense.h5'),
@@ -81,6 +85,7 @@ def main(*kargs, **kwargs):
     train_df = load_data(train_fname)
     test_df = load_data(test_fname)
 
+
     target_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     num_classes = len(target_labels)
 
@@ -91,7 +96,8 @@ def main(*kargs, **kwargs):
 
     # ====Load word vectors====
     logger.info('Loading embeddings...')
-    embeds = Embeds().load(embeds_fname, embeds_format)
+    embeds_word = Embeds().load(word_embeds_fname, embeds_format)
+    embeds_ll3 = Embeds().load(char_embeds_fname, embeds_format)
 
     # ====Clean texts====
     if mode in ('preprocess', 'all'):
@@ -101,37 +107,42 @@ def main(*kargs, **kwargs):
         train_df.to_csv(os.path.join(output_dir, 'train_clear.csv'), index=False)
         test_df.to_csv(os.path.join(output_dir, 'test_clear.csv'), index=False)
 
-    # ====END OF `PREPROCESS`====
-    if mode == 'preprocess':
-        return True
-
     # ====Calculate maximum seq length====
     logger.info('Calc text length...')
-    train_df.fillna('unknown', inplace=True)
-    test_df.fillna('unknown', inplace=True)
+    train_df.fillna('__NA__', inplace=True)
+    test_df.fillna('__NA__', inplace=True)
     train_df['text_len'] = train_df['comment_text_clear'].apply(lambda words: len(words.split()))
     test_df['text_len'] = test_df['comment_text_clear'].apply(lambda words: len(words.split()))
     max_seq_len = np.round(train_df['text_len'].mean() + 3*train_df['text_len'].std()).astype(int)
+    max_char_seq_len = 2000 # empirical
     logger.debug('Max seq length = {}'.format(max_seq_len))
 
     # ====Prepare data to NN====
     logger.info('Converting texts to sequences...')
 
-    if mode in ('all', 'train'):
-        train_df[seq_col_name], test_df[seq_col_name], word_index = convert_text2seq(train_df['comment_text_clear'].tolist(),
+    if mode in ('preprocess', 'all'):
+        train_df[seq_col_name_words], test_df[seq_col_name_words], word_index, train_df[seq_col_name_ll3], test_df[seq_col_name_ll3], ll3_index = convert_text2seq(
+                                                                                 train_df['comment_text_clear'].tolist(),
                                                                                  test_df['comment_text_clear'].tolist(),
                                                                                  max_words,
                                                                                  max_seq_len,
-                                                                                 embeds,
+                                                                                 max_char_seq_len,
+                                                                                 embeds_word,
                                                                                  lower=True,
-                                                                                 char_level=False,
+                                                                                 oov_token='__NA__',
                                                                                  uniq=False,
                                                                                  use_only_exists_words=use_only_exists_words)
         logger.debug('Dictionary size use_exist{} = {}'.format(int(use_only_exists_words), len(word_index)))
+        logger.debug('Char dict size use_exist{} = {}'.format(int(use_only_exists_words), len(ll3_index)))
 
         logger.info('Preparing embedding matrix...')
-        words_not_found = embeds.set_matrix(max_words, word_index)
-        embeds.save(os.path.join(output_dir, 'wiki.embeds.{}k'.format(int(max_words/1000))))
+        words_not_found = embeds_word.set_matrix(max_words, word_index)
+        embeds_ll3.matrix = np.random.normal(size=(len(ll3_index), embeds_word.shape[1]))
+        embeds_ll3.word_index = ll3_index
+        embeds_ll3.word_index_reverse = {val: key for key, val in ll3_index.items()}
+        embeds_ll3.shape = np.shape(embeds_ll3.matrix)
+        embeds_word.save(os.path.join(output_dir, 'wiki.embeds_lw.{}k'.format(int(max_words/1000))))
+        embeds_ll3.save(os.path.join(output_dir, 'wiki.embeds_ll3.{}k'.format(int(max_words/1000))))
 
         # ====Get text vector====
         pooling = {
@@ -140,10 +151,10 @@ def main(*kargs, **kwargs):
                 'sum': {'func': np.sum, 'normalize': False}
         }
         for p in ['max', 'avg', 'sum']:
-            train_df['comment_vec_{}'.format(p)] = train_df[seq_col_name].apply(lambda x: embed_aggregate(x, embeds, **pooling[p]))
-            test_df['comment_vec_{}'.format(p)] = test_df[seq_col_name].apply(lambda x: embed_aggregate(x, embeds, **pooling[p]))
-        train_df.to_csv(os.path.join(output_dir, 'train_clear.csv'), index=False)
-        test_df.to_csv(os.path.join(output_dir, 'test_clear.csv'), index=False)
+            train_df['comment_vec_{}'.format(p)] = train_df[seq_col_name_words].apply(lambda x: embed_aggregate(x, embeds_word, **pooling[p]))
+            test_df['comment_vec_{}'.format(p)] = test_df[seq_col_name_words].apply(lambda x: embed_aggregate(x, embeds_word, **pooling[p]))
+        train_df.to_csv(os.path.join(output_dir, 'train_clear1.csv'), index=False)
+        test_df.to_csv(os.path.join(output_dir, 'test_clear1.csv'), index=False)
     else:
         for col in train_df.columns:
             if col.startswith('comment_seq'):
@@ -154,14 +165,23 @@ def main(*kargs, **kwargs):
                 test_df[col] = test_df[col].apply(lambda x: parse_seq(x, float))
 
 
-    logger.debug('Embedding matrix shape = {}'.format(embeds.shape))
-    logger.debug('Number of null word embeddings = {}'.format(np.sum(np.sum(embeds.matrix, axis=1) == 0)))
+    logger.debug('Embedding matrix shape = {}'.format(embeds_word.shape))
+    logger.debug('Number of null word embeddings = {}'.format(np.sum(np.sum(embeds_word.matrix, axis=1) == 0)))
+
+    # ====END OF `PREPROCESS`====
+    if mode == 'preprocess':
+        return True
 
     # ====Train/test split data====
-    x = np.array(train_df[seq_col_name].values.tolist())
+    x = np.array(train_df[seq_col_name_words].values.tolist())
     y = np.array(train_df[target_labels].values.tolist())
     x_train_nn, x_val_nn, y_train, y_val, train_idxs, val_idxs = split_data(x, y, test_size=0.2, shuffle=True, random_state=42)
-    x_test_nn = np.array(test_df[seq_col_name].values.tolist())
+    x_test_nn = np.array(test_df[seq_col_name_words].values.tolist())
+
+    x_char = np.array(train_df[seq_col_name_ll3].values.tolist())
+    x_char_train_nn = x_char[train_idxs]
+    x_char_val_nn = x_char[val_idxs]
+    x_char_test_nn = np.array(test_df[seq_col_name_ll3].values.tolist())
 
     x_train_tfidf = train_df['comment_text_clear'].values[train_idxs]
     x_val_tfidf = train_df['comment_text_clear'].values[val_idxs]
@@ -190,22 +210,32 @@ def main(*kargs, **kwargs):
                 model = load_model(model_params.get('common', {}).get('model_file', None))
             elif model_label in nn_models:
                 model = nn_models[model_label](
-                            embeds.matrix,
+                            embeds_word.matrix,
+                            embeds_ll3.matrix,
                             num_classes,
                             max_seq_len,
+                            max_char_seq_len,
                             gpus=gpus,
                             **model_params['init'])
                 model_alias = model_params.get('common', {}).get('alias', None)
                 if model_alias is None or not model_alias:
                     model_alias = '{}_{}'.format(model_label, i)
                 logger.info("training {} ...".format(model_label))
-                hist = train(x_train_nn,
+                if model_label == 'dense':
+                    x_tr = [x_train_nn, x_char_train_nn]
+                    x_val = [x_val_nn, x_char_val_nn]
+                    x_test = [x_test_nn, x_char_test_nn]
+                else:
+                    x_tr = x_train_nn
+                    x_val = x_val_nn
+                    x_test = x_test_nn
+                hist = train(x_tr,
                              y_train,
                              model,
                              logger=logger,
                              **model_params['train'])
-                predictions[model_alias] = model.predict(x_val_nn)
-                save_predictions(test_df, model.predict(x_test_nn), target_labels, model_alias)
+                predictions[model_alias] = model.predict(x_val)
+                save_predictions(test_df, model.predict(x_test), target_labels, model_alias)
             elif model_label == 'tfidf':
                 model = TFIDF(target_labels, **model_params['init'])
                 model.fit(x_train_tfidf, y_train, **model_params['train'])
@@ -219,12 +249,12 @@ def main(*kargs, **kwargs):
             metrics[model_alias] = get_metrics(y_val, predictions[model_alias], target_labels)
             logger.debug('{} params:\n{}'.format(model_alias, model_params))
             logger.debug('{} metrics:\n{}'.format(model_alias, print_metrics(metrics[model_alias])))
-            #model.save(model_file[model_label])
-            #joblib.dump(model, model_file['lr'].format(label))
+            model.save(os.path.join(output_dir, model_params['common']['model_file']))
 
     logger.info('Saving metrics...')
     with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
         f.write(json.dumps(metrics))
+
 
     # ====END OF `VALIDATE`====
     if mode == 'validate':
@@ -247,7 +277,7 @@ def main(*kargs, **kwargs):
     meta_model.fit(x_train_meta, y_train_meta, eval_set=(x_val_meta, y_val_meta), use_best_model=True)
     y_hat_meta = meta_model.predict_proba(x_val_meta)
     metrics_meta = get_metrics(y_val_meta, y_hat_meta, target_labels)
-    #joblib.dump(model, model_file['catboost'].format(label))
+    #model.save(os.path.join(output_dir, 'meta.catboost')
     logger.debug('{} metrics:\n{}'.format('META', print_metrics(metrics_meta)))
 
     # ====Predict====

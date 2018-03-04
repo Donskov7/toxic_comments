@@ -7,19 +7,23 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from keras import regularizers
+from keras.regularizers import l1, l2, l1_l2
 from keras.utils import multi_gpu_model
 from keras.models import Sequential, Model
-from keras.layers import Input, Dropout, Concatenate, Embedding
+from keras.layers import Input, Dropout, Concatenate, Embedding, BatchNormalization
 from keras.layers import Dense, Bidirectional, LSTM, GRU, CuDNNLSTM, CuDNNGRU
 from keras.layers import Conv1D, MaxPooling1D, AveragePooling1D, GlobalMaxPooling1D, GlobalAveragePooling1D
 
 try:
-    from .utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
-except ImportError:
     from utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
+except ImportError:
+    from .utils import GlobalZeroMaskedAveragePooling1D, GlobalSumPooling1D
 
 
-def cnn(embedding_matrix, num_classes, max_seq_len, num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5, dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0, n_cnn_layers=1, pool='max', add_embeds=False):
+def cnn(embedding_matrix, char_matrix, num_classes, max_seq_len, max_ll3_seq_len,
+        num_filters=64, l2_weight_decay=0.0001, dropout_val=0.5,
+        dense_dim=32, add_sigmoid=True, train_embeds=False, gpus=0,
+        n_cnn_layers=1, pool='max', add_embeds=False):
     if pool == 'max':
         Pooling = MaxPooling1D
         GlobalPooling = GlobalMaxPooling1D
@@ -42,6 +46,7 @@ def cnn(embedding_matrix, num_classes, max_seq_len, num_filters=64, l2_weight_de
         x1 = Conv1D(num_filters, 7, activation='relu', padding='same')(embeds)
         x1 = GlobalPooling()(x1)
         x = Concatenate()([x, x1])
+    x = BatchNormalization()(x)
     x = Dropout(dropout_val)(x)
     x = Dense(dense_dim, activation='relu', kernel_regularizer=regularizers.l2(l2_weight_decay))(x)
     if add_sigmoid:
@@ -63,8 +68,18 @@ def _get_regularizer(regularizer_name, weight):
         return l1_l2(weight)
     return None
 
-
-def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn_dim=100, dropout_val=0.3, dense_dim=32, n_branches=0, n_rnn_layers=1, n_dense_layers=1, add_sigmoid=True, train_embeds=False, gpus=0, rnn_type='lstm', mask_zero=True, kernel_regularizer=None, recurrent_regularizer=None, activity_regularizer=None, dropout=0.0, recurrent_dropout=0.0):
+def rnn(embedding_matrix, char_matrix, num_classes,  max_seq_len, max_ll3_seq_len,
+        l2_weight_decay=0.0001, rnn_dim=100, dropout_val=0.3,
+        dense_dim=32, n_rnn_layers=1, n_dense_layers=1, add_sigmoid=True,
+        train_embeds=False, gpus=0, rnn_type='lstm', mask_zero=True,
+        kernel_regularizer=None, recurrent_regularizer=None,
+        activity_regularizer=None, dropout=0.0, recurrent_dropout=0.0,
+        pool='max', add_embeds=True, return_state=False):
+    GlobalPool = {
+        'avg': GlobalZeroMaskedAveragePooling1D,
+        'max': GlobalMaxPooling1D,
+        'sum': GlobalSumPooling1D
+    }
     rnn_regularizers = {'kernel_regularizer': _get_regularizer(kernel_regularizer, l2_weight_decay),
                         'recurrent_regularizer': _get_regularizer(recurrent_regularizer, l2_weight_decay),
                         'activity_regularizer': _get_regularizer(activity_regularizer, l2_weight_decay)}
@@ -72,9 +87,9 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
         rnn_regularizers['dropout'] = dropout
         rnn_regularizers['recurrent_dropout'] = recurrent_dropout
     if rnn_type == 'lstm':
-        RNN = CuDNNLSTM if gpus > 0 else LSTM
+        RNN = LSTM # CuDNNLSTM if gpus > 0 else LSTM
     elif rnn_type == 'gru':
-        RNN = CuDNNGRU if gpus > 0 else GRU
+        RNN = GRU # CuDNNGRU if gpus > 0 else GRU
     mask_zero = mask_zero and gpus == 0
 
     input_ = Input(shape=(max_seq_len,))
@@ -84,20 +99,29 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
                        input_length=max_seq_len,
                        mask_zero=mask_zero,
                        trainable=train_embeds)(input_)
-    branches = []
-    for _ in range(n_branches):
-        branch = Bidirectional(RNN(rnn_dim, return_sequences=True, **rnn_regularizers))(embeds)
-        branch = Dropout(dropout_val)(branch)
-        branches.append(branch)
-    if n_branches > 1:
-        x = Concatenate()(branches)
-    elif n_branches == 1:
-        x = branches[0]
-    else:
-        x = embeds
-    for _ in range(n_rnn_layers):
-        x = Bidirectional(RNN(rnn_dim, return_sequences=False, **rnn_regularizers))(x)
-        x = Dropout(dropout_val)(x)
+    x = embeds
+    for _ in range(n_rnn_layers-1):
+        x = Bidirectional(RNN(rnn_dim, return_sequences=True, **rnn_regularizers))(x)
+    x = Bidirectional(RNN(rnn_dim, return_sequences=False, return_state=return_state, **rnn_regularizers))(x)
+    if return_state:
+        x = Concatenate()(x)
+    if add_embeds:
+        embeds2 = Embedding(embedding_matrix.shape[0],
+                       embedding_matrix.shape[1],
+                       weights=[embedding_matrix],
+                       input_length=max_seq_len,
+                       mask_zero=False,
+                       trainable=train_embeds)(input_)
+        if isinstance(pool, list) and len(pool) > 1:
+            to_concat = []
+            for p in pool:
+                to_concat.append(GlobalPool[p]()(embeds2))
+            x1 = Concatenate()(to_concat)
+        else:
+            x1 = GlobalPool[pool]()(embeds2)
+        x = Concatenate()([x, x1])
+    x = BatchNormalization()(x)
+    x = Dropout(dropout_val)(x)
     for _ in range(n_dense_layers-1):
         x = Dense(dense_dim, activation="relu")(x)
         x = Dropout(dropout_val)(x)
@@ -110,7 +134,10 @@ def rnn(embedding_matrix, num_classes,  max_seq_len, l2_weight_decay=0.0001, rnn
     return model
 
 
-def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10, concat=0, dropout_val=0.5, l2_weight_decay=0.0001, pool='max', add_sigmoid=True, train_embeds=False, gpus=0):
+def dense(embedding_matrix, ll3_matrix, num_classes, max_seq_len, max_ll3_seq_len,
+          dense_dim=100, n_layers=10, concat=0, dropout_val=0.5,
+          l2_weight_decay=0.0001, pool='max', add_sigmoid=True,
+          train_embeds=False, gpus=0, add_ll3=True):
     GlobalPool = {
         'avg': GlobalZeroMaskedAveragePooling1D,
         'max': GlobalMaxPooling1D,
@@ -118,19 +145,30 @@ def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10
     }
 
     input_ = Input(shape=(max_seq_len,))
+    input2_ = Input(shape=(max_ll3_seq_len,))
     embeds = Embedding(embedding_matrix.shape[0],
                        embedding_matrix.shape[1],
                        weights=[embedding_matrix],
                        input_length=max_seq_len,
                        trainable=train_embeds)(input_)
-
+    ll3_embeds = Embedding(ll3_matrix.shape[0],
+                       ll3_matrix.shape[1],
+                       weights=[ll3_matrix],
+                       input_length=max_ll3_seq_len,
+                       trainable=True)(input2_)
     if isinstance(pool, list) and len(pool) > 1:
         to_concat = []
         for p in pool:
             to_concat.append(GlobalPool[p]()(embeds))
+            if add_ll3:
+                to_concat.append(GlobalPool[p]()(ll3_embeds))
         x = Concatenate()(to_concat)
     else:
         x = GlobalPool[pool]()(embeds)
+        if add_ll3:
+            x1 = GlobalPool[pool]()(ll3_embeds)
+            x = Concatenate()([x, x1])
+    x = BatchNormalization()(x)
     prev = []
     for i in range(n_layers):
         if concat > 0:
@@ -141,11 +179,15 @@ def dense(embedding_matrix, num_classes, max_seq_len, dense_dim=100, n_layers=10
                 prev.append(x)
                 x = Concatenate(axis=-1)(prev)
         x = Dense(dense_dim, activation="relu")(x)
+        x = BatchNormalization()(x)
         x = Dropout(dropout_val)(x)
     output_ = Dense(dense_dim, activation="relu", kernel_regularizer=regularizers.l2(l2_weight_decay))(x)
     if add_sigmoid:
         output_ = Dense(num_classes, activation="sigmoid")(output_)
-    model = Model(inputs=input_, outputs=output_)
+    if add_ll3:
+        model = Model(inputs=[input_, input2_], outputs=output_)
+    else:
+        model = Model(inputs=input_, outputs=output_)
     if gpus > 0:
         model = multi_gpu_model(model, gpus=gpus)
     return model
@@ -177,7 +219,7 @@ class TFIDF(object):
         x_tfidf = self.transform_tfidf(X)
         for i, model in enumerate(self.models):
             y.append(model.predict(x_tfidf))
-        return np.array(y)
+        return np.transpose(y)
 
     def fit_tfidf(self, X, max_features):
         self.word_tfidf = TfidfVectorizer(max_features=max_features, analyzer='word', lowercase=True, ngram_range=(1, 3), token_pattern='[a-zA-Z0-9]')
@@ -215,13 +257,13 @@ class CatBoost(object):
         y = []
         for i, model in enumerate(self.models):
             y.append(model.predict(X))
-        return np.array(y)
+        return np.transpose(y)
 
     def predict_proba(self, X):
         y = []
         for i, model in enumerate(self.models):
             y.append(model.predict_proba(X)[:, 1])
-        return np.array(y)
+        return np.transpose(y)
 
 
 def save_predictions(df, predictions, target_labels, additional_name=None):
